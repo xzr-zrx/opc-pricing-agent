@@ -11,7 +11,33 @@ from app.tools.pricing_tools import TOOL_SCHEMAS, calculate_margin, execute_tool
 
 settings = get_settings()
 
+def _extract_json_object(text: str) -> dict:
+    """兼容纯 JSON、```json ... ``` 和前后带少量解释文字的模型输出。"""
+    cleaned = (text or "").strip()
 
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+
+        if lines and lines[0].strip().lower() in ("```json", "```"):
+            lines = lines[1:]
+
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        cleaned = "\n".join(lines).strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError(
+                f"模型没有返回有效 JSON: {cleaned[:500]}"
+            )
+
+        return json.loads(cleaned[start:end + 1])
 def _persist_tool(db: Session, run_id: int, name: str, args: dict, result: dict | None, ok: bool, duration_ms: int):
     db.add(AgentToolCall(run_id=run_id, tool_name=name, arguments_json=json.dumps(args, ensure_ascii=False),
                          result_summary=json.dumps(result, ensure_ascii=False)[:1500] if result else None,
@@ -145,10 +171,78 @@ async def run_agent(db: Session, product_id: int, event_id: int | None = None) -
                 continue
 
             text = response.text.strip()
-            # Native 模式下期望直接返回 Recommendation JSON。
+
+            # Native 模式下模型已经不再调用工具，
+            # 此时应返回最终 Recommendation。
             if native_mode:
-                rec = RecommendationPayload.model_validate_json(text)
-                return _persist_recommendation(db, run, _validate_recommendation(product, rec))
+                try:
+                    obj = _extract_json_object(text)
+                    rec = RecommendationPayload.model_validate(obj)
+
+                except Exception as first_error:
+                    # 按规格允许一次格式修复请求
+                    repair_prompt = f"""
+            你刚才的最终结果不符合规定格式。
+
+            错误：
+            {str(first_error)}
+
+            你必须重新输出且只输出一个 JSON 对象。
+            禁止 Markdown 代码块，禁止解释文字。
+
+            严格使用下面结构：
+
+            {{
+            "action": "KEEP_PRICE | ADJUST_PRICE | LIMITED_PROMOTION | BUNDLE_PROMOTION | NEED_MORE_DATA | PAUSE_AND_OBSERVE",
+            "suggested_price": 55.0,
+            "promotion": {{}},
+            "evidence_summary": [
+                "证据1",
+                "证据2"
+            ],
+            "risk_notes": [
+                "风险1"
+            ],
+            "data_completeness": "HIGH",
+            "next_check_after_hours": 12,
+            "need_user_inputs": []
+            }}
+
+            特别注意：
+            1. action 必须是上述六个英文枚举值之一。
+            2. action 不能是对象。
+            3. suggested_price 只能是数字或 null。
+            4. evidence_summary 和 risk_notes 必须是字符串数组。
+            5. 只返回 JSON。
+            """
+
+                    repair_messages = messages + [
+                        {
+                            "role": "assistant",
+                            "content": text
+                        },
+                        {
+                            "role": "user",
+                            "content": repair_prompt
+                        }
+                    ]
+
+                    repaired = await client.chat(
+                        repair_messages,
+                        tools=None
+                    )
+
+                    repaired_obj = _extract_json_object(repaired.text)
+
+                    rec = RecommendationPayload.model_validate(
+                        repaired_obj
+                    )
+
+                return _persist_recommendation(
+                    db,
+                    run,
+                    _validate_recommendation(product, rec)
+                )
 
             # JSON action fallback
             obj = json.loads(text)
