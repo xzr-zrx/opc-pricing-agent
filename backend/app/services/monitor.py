@@ -51,7 +51,7 @@ def monitor_all(db: Session) -> list[int]:
     competitors = db.scalars(
         select(Competitor).where(
             Competitor.active.is_(True),
-            Competitor.source_type != "taobao",
+            Competitor.source_type.notin_(["taobao", "google_shopping"]),
         )
     ).all()
     for c in competitors:

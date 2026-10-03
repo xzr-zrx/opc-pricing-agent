@@ -37,27 +37,28 @@ type Competitor = {
   active: boolean
 }
 
-type TaobaoItem = {
+type MarketplaceItem = {
   rank: number
   competitor_id: number
   title: string
   price: number
-  sales: number
-  sales_text: string
+  popularity: number
+  popularity_text: string
+  rating_text?: string | null
   shop_name?: string | null
   url?: string | null
   image_url?: string | null
   collected_at: string
 }
 
-type TaobaoPayload = {
+type MarketplacePayload = {
   product_id: number
   keyword: string
   source: string
   queried_at: string | null
   count: number
   notice?: string | null
-  items: TaobaoItem[]
+  items: MarketplaceItem[]
 }
 
 const products = ref<Product[]>([])
@@ -66,9 +67,9 @@ const competitors = ref<Competitor[]>([])
 const history = ref<any[]>([])
 const recs = ref<any[]>([])
 const runs = ref<any[]>([])
-const taobaoData = ref<TaobaoPayload | null>(null)
+const marketplaceData = ref<MarketplacePayload | null>(null)
 const busy = ref(false)
-const taobaoLoading = ref(false)
+const marketplaceLoading = ref(false)
 const message = ref('')
 type AlertType = 'success' | 'info' | 'warning' | 'error'
 const messageType = ref<AlertType>('info')
@@ -96,7 +97,7 @@ const minSafePrice = computed(() => {
 
 const latestRun = computed(() => runs.value[0] || null)
 const latestRecommendation = computed(() => recs.value[0] || null)
-const taobaoItems = computed(() => taobaoData.value?.items || [])
+const marketplaceItems = computed(() => marketplaceData.value?.items || [])
 const activeCompetitorCount = computed(
   () => competitors.value.filter((item) => item.active !== false).length,
 )
@@ -142,14 +143,14 @@ async function loadDetail() {
       api.get(`/products/${id}/price-history`),
       api.get(`/products/${id}/recommendations`),
       api.get(`/products/${id}/runs`),
-      api.get(`/products/${id}/competitors/taobao/latest`),
+      api.get(`/products/${id}/competitors/marketplace/latest`),
     ])
 
     competitors.value = c.data
     history.value = h.data
     recs.value = r.data
     runs.value = u.data
-    taobaoData.value = t.data
+    marketplaceData.value = t.data
 
     await nextTick()
     drawChart()
@@ -186,24 +187,24 @@ async function advance() {
   }
 }
 
-async function searchTaobao() {
-  if (!selectedId.value || taobaoLoading.value) return
-  taobaoLoading.value = true
+async function searchMarketplace() {
+  if (!selectedId.value || marketplaceLoading.value) return
+  marketplaceLoading.value = true
   try {
     const response = await api.post(
-      `/products/${selectedId.value}/competitors/search-taobao`,
+      `/products/${selectedId.value}/competitors/search-marketplace`,
       null,
-      { timeout: 65000 },
+      { timeout: 30000 },
     )
-    taobaoData.value = response.data
+    marketplaceData.value = response.data
     const suffix = response.data.notice ? ` ${response.data.notice}` : ''
-    setMessage(`淘宝竞品查询完成，共展示 ${response.data.count} 条。${suffix}`, 'success')
+    setMessage(`电商竞品查询完成，共展示 ${response.data.count} 条。${suffix}`, 'success')
     await loadDetail()
   } catch (error) {
-    // 查询失败不清空已有淘宝结果，避免整个 Dashboard 因一次采集失败失去可用状态。
+    // 查询失败不清空已有竞品结果，避免整个 Dashboard 因一次外部 API 失败失去可用状态。
     setMessage(humanError(error), 'error')
   } finally {
-    taobaoLoading.value = false
+    marketplaceLoading.value = false
   }
 }
 
@@ -295,13 +296,13 @@ function drawChart() {
         axisLabel: { color: '#8190a8', fontSize: 9 },
       },
       series: visibleSeries.map((item: any, index: number) => ({
-        name: item.source_type === 'taobao' ? `淘宝·${item.name}` : item.name,
+        name: item.source_type === 'google_shopping' ? `Google·${item.name}` : item.source_type === 'taobao' ? `淘宝·${item.name}` : item.name,
         type: 'line',
         smooth: 0.3,
         symbol: 'circle',
         symbolSize: 4,
         showSymbol: item.points.length <= 2,
-        lineStyle: { width: item.source_type === 'taobao' ? 2.2 : 1.6 },
+        lineStyle: { width: ['google_shopping', 'taobao'].includes(item.source_type) ? 2.2 : 1.6 },
         areaStyle: index === 0 ? { opacity: 0.04 } : undefined,
         data: item.points.map((point: any) => point.price),
       })),
@@ -362,7 +363,7 @@ onBeforeUnmount(() => {
         <div class="title-group">
           <span class="eyebrow">SMART PRICING WORKSPACE</span>
           <h1>竞品监测与智能定价</h1>
-          <p>淘宝手动查询与 Agent 分析相互独立，数据先入库，再由后端工具读取。</p>
+          <p>公开电商竞品查询与 Agent 分析相互独立，数据先入库，再由后端工具读取。</p>
         </div>
 
         <div class="toolbar">
@@ -378,7 +379,7 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="demo-note">
-        商品成本按项目配置；当前售价、库存、销量与 Mock 竞品属于演示基础数据。淘宝卡片只展示手动查询后真实抓取并入库的数据。
+        商品成本按项目配置；当前售价、库存、销量与 Mock 竞品属于演示基础数据。竞品卡片展示 Google Shopping 实时查询并入库的公开商品数据。
       </div>
 
       <el-alert
@@ -407,7 +408,7 @@ onBeforeUnmount(() => {
           </article>
           <article class="metric-card">
             <div class="metric-icon"><el-icon><Monitor /></el-icon></div>
-            <div class="metric-copy"><span>当前竞品</span><strong>{{ taobaoItems.length || activeCompetitorCount }}</strong><small>{{ taobaoItems.length ? '淘宝最近一次 Top5' : '当前启用监控项' }}</small></div>
+            <div class="metric-copy"><span>当前竞品</span><strong>{{ marketplaceItems.length || activeCompetitorCount }}</strong><small>{{ marketplaceItems.length ? '市场热度 Top5' : '当前启用监控项' }}</small></div>
           </article>
         </section>
 
@@ -423,21 +424,21 @@ onBeforeUnmount(() => {
           <article id="monitoring" class="panel monitor-panel">
             <div class="panel-head monitor-head">
               <div>
-                <span class="panel-kicker">TAOBAO COMPETITORS</span>
+                <span class="panel-kicker">MARKET COMPETITORS</span>
                 <h2>竞品监控</h2>
               </div>
-              <el-button type="primary" :icon="Search" :loading="taobaoLoading" :disabled="taobaoLoading" @click="searchTaobao">
-                {{ taobaoLoading ? '正在查询...' : '查询淘宝竞品' }}
+              <el-button type="primary" :icon="Search" :loading="marketplaceLoading" :disabled="marketplaceLoading" @click="searchMarketplace">
+                {{ marketplaceLoading ? '正在查询...' : '查询电商竞品' }}
               </el-button>
             </div>
 
             <div class="source-line">
-              <div><span class="source-dot" />淘宝数据</div>
-              <span>最近查询：{{ formatTime(taobaoData?.queried_at) }}</span>
+              <div><span class="source-dot" />Google Shopping</div>
+              <span>最近查询：{{ formatTime(marketplaceData?.queried_at) }}</span>
             </div>
-            <div v-if="taobaoData?.keyword" class="keyword-line">搜索词：{{ taobaoData.keyword }}</div>
+            <div v-if="marketplaceData?.keyword" class="keyword-line">搜索词：{{ marketplaceData.keyword }}</div>
 
-            <el-table v-if="taobaoItems.length" class="compact-table" :data="taobaoItems" height="238">
+            <el-table v-if="marketplaceItems.length" class="compact-table" :data="marketplaceItems" height="238">
               <el-table-column prop="rank" label="#" width="38" align="center" />
               <el-table-column label="商品" min-width="150">
                 <template #default="scope">
@@ -448,22 +449,22 @@ onBeforeUnmount(() => {
                 </template>
               </el-table-column>
               <el-table-column label="价格" width="72"><template #default="scope">¥{{ scope.row.price }}</template></el-table-column>
-              <el-table-column label="销量" width="78"><template #default="scope">{{ scope.row.sales_text }}</template></el-table-column>
-              <el-table-column prop="shop_name" label="店铺" min-width="90" show-overflow-tooltip />
+              <el-table-column label="热度" width="92"><template #default="scope">{{ scope.row.popularity_text }}</template></el-table-column>
+              <el-table-column prop="shop_name" label="商家" min-width="90" show-overflow-tooltip />
               <el-table-column label="操作" width="58" align="center">
                 <template #default="scope">
                   <a v-if="scope.row.url" class="view-link" :href="scope.row.url" target="_blank" rel="noopener noreferrer"><el-icon><Link /></el-icon>查看</a>
                 </template>
               </el-table-column>
             </el-table>
-            <div v-else class="taobao-empty">
+            <div v-else class="marketplace-empty">
               <el-icon><Search /></el-icon>
-              <strong>尚无淘宝查询数据</strong>
-              <span>先在本机完成淘宝登录，再点击右上角按钮。</span>
+              <strong>尚无实时竞品数据</strong>
+              <span>先在 Render 后端配置 SERPER_API_KEY，再点击右上角按钮。</span>
             </div>
 
             <div class="monitor-foot">
-              <span>Top5 仅指本次搜索结果中有销量数据的商品。</span>
+              <span>Top5 按公开评论/评分数量衡量市场热度，不等于销量；外币价格按公开汇率折算为人民币。</span>
               <el-button text :loading="busy" @click="advance">推进 Mock 场景</el-button>
             </div>
           </article>
@@ -490,7 +491,7 @@ onBeforeUnmount(() => {
             <div v-else class="rec-empty">
               <DataAnalysis class="empty-svg" />
               <strong>尚无定价建议</strong>
-              <span>淘宝查询完成后，可单独点击顶部“Agent 定价分析”。</span>
+              <span>竞品查询完成后，可单独点击顶部“Agent 定价分析”。</span>
             </div>
           </article>
 
@@ -626,10 +627,10 @@ onBeforeUnmount(() => {
 .product-cell img { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; flex: 0 0 auto; border: 1px solid #e8edf4; }
 .product-cell span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .view-link { display: inline-flex; align-items: center; gap: 2px; color: #3569d4; text-decoration: none; font-size: 9px; }
-.taobao-empty { height: 202px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #9aa5b4; text-align: center; }
-.taobao-empty .el-icon { font-size: 26px; color: #b6c3d6; margin-bottom: 7px; }
-.taobao-empty strong { color: #69778c; font-size: 10px; }
-.taobao-empty span { margin-top: 4px; font-size: 8px; }
+.marketplace-empty { height: 202px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #9aa5b4; text-align: center; }
+.marketplace-empty .el-icon { font-size: 26px; color: #b6c3d6; margin-bottom: 7px; }
+.marketplace-empty strong { color: #69778c; font-size: 10px; }
+.marketplace-empty span { margin-top: 4px; font-size: 8px; }
 .monitor-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; color: #98a4b4; font-size: 8px; }
 
 .recommendation-content { display: flex; flex-direction: column; gap: 10px; }

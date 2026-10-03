@@ -14,7 +14,7 @@ DEMO_PRODUCTS = [
     {
         "name": "照片定制积木人像",
         "sku": "PHOTO_BLOCK_FIGURE",
-        "search_keyword": "照片定制积木人像",
+        "search_keyword": "custom photo building block figure",
         "cost": 25.0,
         "current_price": 69.0,
         "stock": 80,
@@ -22,7 +22,7 @@ DEMO_PRODUCTS = [
     {
         "name": "定制毕业小熊",
         "sku": "GRADUATION_BEAR",
-        "search_keyword": "毕业小熊 定制",
+        "search_keyword": "personalized graduation teddy bear",
         "cost": 22.0,
         "current_price": 59.0,
         "stock": 100,
@@ -30,7 +30,7 @@ DEMO_PRODUCTS = [
     {
         "name": "毕业纪念T恤",
         "sku": "GRADUATION_TSHIRT",
-        "search_keyword": "毕业纪念T恤 定制",
+        "search_keyword": "custom graduation t shirt",
         "cost": 20.0,
         "current_price": 59.0,
         "stock": 120,
@@ -108,7 +108,7 @@ def seed_demo_catalog(db: Session) -> list[Product]:
             db.add(product)
             db.flush()
         else:
-            # 名称、SKU、淘宝关键词和用户明确给出的成本属于系统基础配置；
+            # 名称、SKU、电商搜索关键词和用户明确给出的成本属于系统基础配置；
             # 已存在商品的当前售价/库存不覆盖，避免启动时重置用户后续演示操作。
             product.name = config["name"]
             product.search_keyword = config["search_keyword"]

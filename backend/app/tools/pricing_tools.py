@@ -38,8 +38,53 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
         )
     ).all()
 
-    # 手动淘宝查询成功后，Agent 优先读取当前这一批真实淘宝 Top5。
-    # 若尚无有效淘宝数据，则继续使用项目原有 mock/manual/generic_html 数据。
+    # 外部电商查询成功后优先读取最近一次 Google Shopping Top5。
+    # ratingCount 仅作为“市场热度”指标，绝不伪装成销量。
+    market_with_data = []
+    for competitor in active:
+        if competitor.source_type != "google_shopping":
+            continue
+        latest = db.scalar(
+            select(CompetitorPriceSnapshot)
+            .where(
+                CompetitorPriceSnapshot.competitor_id == competitor.id,
+                CompetitorPriceSnapshot.success.is_(True),
+            )
+            .order_by(desc(CompetitorPriceSnapshot.collected_at), desc(CompetitorPriceSnapshot.id))
+            .limit(1)
+        )
+        if latest and latest.price is not None:
+            market_with_data.append((competitor, latest))
+
+    if market_with_data:
+        market_with_data.sort(key=lambda pair: pair[1].sales or 0, reverse=True)
+        result = []
+        for competitor, latest in market_with_data[:5]:
+            result.append({
+                "competitor_id": competitor.id,
+                "name": competitor.name,
+                "source_type": "google_shopping",
+                "current_price_cny": latest.price,
+                "popularity_count": int(latest.sales or 0),
+                "popularity_text": latest.sales_text,
+                "popularity_metric": "rating_count",
+                "rating_text": latest.promo_text,
+                "shop_name": competitor.shop_name,
+                "url": competitor.url,
+                "collected_at": latest.collected_at.isoformat(),
+                "recent_prices_cny": [latest.price],
+            })
+        return {
+            "product_id": product_id,
+            "data_source": "google_shopping_manual_top5",
+            "top5_scope": "current_search_results_ranked_by_rating_count",
+            "price_currency": "CNY",
+            "price_note": "外币报价按查询时公开汇率折算为人民币，仅用于竞品参考。",
+            "popularity_note": "popularity_count 为评论/评分数量，代表市场热度，不是销量。",
+            "competitors": result,
+        }
+
+    # 兼容已经存在的淘宝历史数据；若没有 Google Shopping 数据，仍可读取旧 Top5。
     taobao_with_data = []
     for competitor in active:
         if competitor.source_type != "taobao":
@@ -84,7 +129,7 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
 
     result = []
     for c in active:
-        if c.source_type == "taobao":
+        if c.source_type in {"taobao", "google_shopping"}:
             continue
         snaps = db.scalars(
             select(CompetitorPriceSnapshot)
@@ -170,7 +215,7 @@ def simulate_pricing_options(db: Session, product_id: int, candidate_list: list[
 
 
 TOOL_SCHEMAS = [
-    {"type":"function","function":{"name":"get_competitor_context","description":"读取竞品当前与近期价格、促销和变化幅度","parameters":ProductIdArgs.model_json_schema()}},
+    {"type":"function","function":{"name":"get_competitor_context","description":"读取竞品价格、近期变化及外部市场热度等可验证数据","parameters":ProductIdArgs.model_json_schema()}},
     {"type":"function","function":{"name":"get_sales_summary","description":"读取并计算最近销量汇总和趋势","parameters":SalesSummaryArgs.model_json_schema()}},
     {"type":"function","function":{"name":"get_inventory_status","description":"读取当前库存及可售天数","parameters":ProductIdArgs.model_json_schema()}},
     {"type":"function","function":{"name":"calculate_margin","description":"确定性计算候选价格的毛利、毛利率和最低安全售价","parameters":MarginArgs.model_json_schema()}},

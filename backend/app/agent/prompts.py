@@ -20,6 +20,7 @@ SYSTEM_PROMPT = """
 12. risk_notes 用于说明当前建议可能存在的风险。
 13. need_user_inputs 仅在缺少无法通过工具获得的必要信息时填写。
 14. action 必须是字符串，绝对不能是对象。
+15. 如果竞品工具返回 popularity_count / rating_count，它表示评论或评分数量形成的市场热度，不是销量；不得把它表述为竞品销量。
 
 最终 JSON 必须严格符合：
 
@@ -103,6 +104,7 @@ JSON_FALLBACK_PROMPT = """
    不要提前返回 NEED_MORE_DATA，应继续调用工具。
 10. 只有缺少无法通过当前工具获得的必要信息时，
     才返回 NEED_MORE_DATA。
+11. 如果竞品工具返回 popularity_count / rating_count，只能表述为市场热度或评论数量，不得称为销量。
 
 例如，需要查询竞品信息时：
 

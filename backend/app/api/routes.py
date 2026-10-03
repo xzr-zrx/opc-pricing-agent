@@ -10,7 +10,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.agent.runner import run_agent
-from app.collectors.taobao import TaobaoCollectorError
+from app.collectors.marketplace import MarketplaceCollectorError
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.llm.gateway import LLMClient
@@ -27,7 +27,7 @@ from app.schemas.competitors import CompetitorCreate, CompetitorOut
 from app.schemas.products import ProductCreate, ProductOut, ProductUpdate
 from app.services.demo import advance_demo, seed_demo
 from app.services.monitor import collect_competitor
-from app.services.taobao import get_latest_taobao_competitors, search_and_store_taobao
+from app.services.marketplace import get_latest_marketplace_competitors, search_and_store_marketplace
 
 router = APIRouter(prefix="/api")
 
@@ -129,21 +129,21 @@ def add_competitor(product_id: int, body: CompetitorCreate, db: Session = Depend
     return row
 
 
-@router.get("/products/{product_id}/competitors/taobao/latest")
-def latest_taobao_competitors(product_id: int, db: Session = Depends(get_db)):
+@router.get("/products/{product_id}/competitors/marketplace/latest")
+def latest_marketplace_competitors(product_id: int, db: Session = Depends(get_db)):
     try:
-        return get_latest_taobao_competitors(db, product_id)
+        return get_latest_marketplace_competitors(db, product_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 
 
-@router.post("/products/{product_id}/competitors/search-taobao")
-async def search_taobao_competitors(product_id: int, db: Session = Depends(get_db)):
+@router.post("/products/{product_id}/competitors/search-marketplace")
+async def search_marketplace_competitors(product_id: int, db: Session = Depends(get_db)):
     try:
-        return await search_and_store_taobao(db, product_id)
+        return await search_and_store_marketplace(db, product_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
-    except TaobaoCollectorError as exc:
+    except MarketplaceCollectorError as exc:
         raise HTTPException(
             status_code=exc.status_code,
             detail={"code": exc.code, "message": exc.message},
@@ -153,8 +153,8 @@ async def search_taobao_competitors(product_id: int, db: Session = Depends(get_d
 @router.post("/competitors/{competitor_id}/collect")
 def collect_one(competitor_id: int, advance: bool = False, db: Session = Depends(get_db)):
     competitor = db.get(Competitor, competitor_id)
-    if competitor and competitor.source_type == "taobao":
-        raise HTTPException(400, "淘宝竞品仅支持商品级手动查询接口")
+    if competitor and competitor.source_type in {"taobao", "google_shopping"}:
+        raise HTTPException(400, "外部电商竞品仅支持商品级手动查询接口")
     try:
         snap, event = collect_competitor(db, competitor_id, advance=advance)
     except ValueError as exc:
