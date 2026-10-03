@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -239,19 +244,70 @@ async def search_taobao(
                 locale="zh-CN",
                 viewport={"width": 1440, "height": 1000},
             )
+
+            # 竞品查询只依赖 DOM 文本和链接。Render 免费实例上不下载图片、字体、
+            # 音视频，可显著减少网络流量和 Chromium 资源占用。
+            async def block_heavy_resources(route):
+                if route.request.resource_type in {"image", "media", "font"}:
+                    await route.abort()
+                else:
+                    await route.continue_()
+
+            await context.route("**/*", block_heavy_resources)
             page = await context.new_page()
             page.set_default_timeout(timeout_ms)
 
+            started_at = time.perf_counter()
+            logger.info("[Taobao] start keyword=%s", keyword)
+
             try:
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=timeout_ms)
-                await page.wait_for_timeout(1800)
-                for _ in range(3):
+                # 只等到服务器开始返回页面，不再等待淘宝整页 DOMContentLoaded。
+                # 淘宝页面资源很多，Render 海外实例等待完整首屏会明显变慢。
+                await page.goto(
+                    search_url,
+                    wait_until="commit",
+                    timeout=min(timeout_ms, 30000),
+                )
+                logger.info(
+                    "[Taobao] page connected %.2fs url=%s",
+                    time.perf_counter() - started_at,
+                    page.url,
+                )
+
+                link_selector = (
+                    'a[href*="item.taobao.com/item.htm"], '
+                    'a[href*="detail.tmall.com/item.htm"]'
+                )
+
+                # 不等整张淘宝页面完全加载，只等待商品链接进入 DOM。
+                try:
+                    await page.wait_for_selector(
+                        link_selector,
+                        state="attached",
+                        timeout=min(timeout_ms, 45000),
+                    )
+                except PlaywrightTimeoutError:
+                    # 后面继续读取 body，以区分登录失效、验证码、风控和真正无结果。
+                    pass
+
+                logger.info(
+                    "[Taobao] product wait finished %.2fs",
+                    time.perf_counter() - started_at,
+                )
+
+                # 给淘宝前端少量时间完成首屏渲染，再轻量滚动加载更多商品。
+                await page.wait_for_timeout(800)
+                for _ in range(2):
                     await page.evaluate("window.scrollBy(0, 900)")
-                    await page.wait_for_timeout(450)
+                    await page.wait_for_timeout(250)
+
+                logger.info(
+                    "[Taobao] scrolling finished %.2fs",
+                    time.perf_counter() - started_at,
+                )
 
                 body_text = (await page.locator("body").inner_text(timeout=5000))[:20000]
                 current_url = page.url
-                link_selector = 'a[href*="item.taobao.com/item.htm"], a[href*="detail.tmall.com/item.htm"]'
                 link_count = await page.locator(link_selector).count()
                 verification_dom = await page.locator(
                     '.nc-container, [id*="nc_"][class*="nc"], [class*="baxia"], [class*="Captcha"]'
@@ -338,9 +394,19 @@ async def search_taobao(
                     max_scan_items,
                 )
 
-                # 页面访问成功后刷新 storage state，使正常续期的 cookie 被保存下来。
-                state_path.parent.mkdir(parents=True, exist_ok=True)
-                await context.storage_state(path=str(state_path))
+                logger.info(
+                    "[Taobao] DOM parsed %.2fs raw_items=%d",
+                    time.perf_counter() - started_at,
+                    len(raw_items),
+                )
+
+                # 本地 storage_state 可刷新 cookie；Render Secret File 位于 /etc/secrets，
+                # 运行时只读，不能写回，否则一次成功查询也可能因为权限错误最终失败。
+                if not str(state_path).startswith("/etc/secrets/"):
+                    state_path.parent.mkdir(parents=True, exist_ok=True)
+                    await context.storage_state(path=str(state_path))
+                else:
+                    logger.info("[Taobao] skip storage-state writeback for Render secret file")
             finally:
                 await context.close()
                 await browser.close()
