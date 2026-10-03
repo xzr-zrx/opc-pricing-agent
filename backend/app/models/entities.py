@@ -23,6 +23,15 @@ class Product(Base):
     competitors = relationship("Competitor", cascade="all, delete-orphan", back_populates="product")
 
 
+class ProductPriceSnapshot(Base):
+    __tablename__ = "product_price_snapshots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    price: Mapped[float] = mapped_column(Float)
+    source_type: Mapped[str] = mapped_column(String(30), default="system", index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class Competitor(Base):
     __tablename__ = "competitors"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Competitor, CompetitorPriceSnapshot, Product, SalesDaily
+from app.models import Competitor, CompetitorPriceSnapshot, Product, ProductPriceSnapshot, SalesDaily
 from app.services.monitor import collect_competitor
+from app.services.trends import ensure_product_price_snapshot
 
 
 DEMO_PRODUCTS = [
@@ -81,6 +82,55 @@ def _ensure_mock_data(db: Session, product: Product) -> list[Competitor]:
     return comps
 
 
+def _ensure_demo_price_history(db: Session, product: Product, comps: list[Competitor]) -> None:
+    """仅为显式 Demo 模式补齐7天确定性历史，不与真实拼多多快照混用。"""
+    own_demo_count = db.scalar(
+        select(func.count(ProductPriceSnapshot.id)).where(
+            ProductPriceSnapshot.product_id == product.id,
+            ProductPriceSnapshot.source_type == "demo",
+        )
+    ) or 0
+    if own_demo_count == 0:
+        own_factors = [1.00, 1.00, 0.99, 0.99, 0.98, 0.98, 1.00]
+        for i, factor in enumerate(own_factors):
+            recorded = datetime.combine(date.today() - timedelta(days=6 - i), datetime.min.time()).replace(hour=12)
+            db.add(ProductPriceSnapshot(
+                product_id=product.id,
+                price=round(float(product.current_price) * factor, 2),
+                source_type="demo",
+                recorded_at=recorded,
+            ))
+
+    demo_series = [
+        [1.00, .98, .96, .94, .92, .90, .88],
+        [.94, .95, .94, .93, .94, .93, .92],
+        [1.05, 1.04, 1.02, 1.01, .99, .98, .97],
+    ]
+    for index, comp in enumerate(sorted(comps, key=lambda row: row.id)):
+        series = demo_series[index % len(demo_series)]
+        for i, factor in enumerate(series):
+            day = date.today() - timedelta(days=6 - i)
+            day_start = datetime.combine(day, datetime.min.time())
+            day_end = datetime.combine(day, datetime.max.time())
+            exists = db.scalar(
+                select(func.count(CompetitorPriceSnapshot.id)).where(
+                    CompetitorPriceSnapshot.competitor_id == comp.id,
+                    CompetitorPriceSnapshot.collected_at >= day_start,
+                    CompetitorPriceSnapshot.collected_at <= day_end,
+                )
+            ) or 0
+            if exists:
+                continue
+            collected = day_start.replace(hour=13 + index)
+            db.add(CompetitorPriceSnapshot(
+                competitor_id=comp.id,
+                price=round(float(product.current_price) * factor, 2),
+                promo_text="Demo 历史",
+                collected_at=collected,
+                success=True,
+            ))
+
+
 def seed_demo_catalog(db: Session) -> list[Product]:
     """幂等创建比赛演示所需的三个商品，并补齐 Demo mock/销量基础数据。"""
     products: list[Product] = []
@@ -115,7 +165,9 @@ def seed_demo_catalog(db: Session) -> list[Product]:
             product.cost = config["cost"]
             product.active = True
 
-        _ensure_mock_data(db, product)
+        comps = _ensure_mock_data(db, product)
+        ensure_product_price_snapshot(db, product, source_type="system")
+        _ensure_demo_price_history(db, product, comps)
         products.append(product)
 
     db.commit()

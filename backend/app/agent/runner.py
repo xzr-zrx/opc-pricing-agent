@@ -1,13 +1,13 @@
 from __future__ import annotations
 import json, time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 from app.agent.prompts import JSON_FALLBACK_PROMPT, SYSTEM_PROMPT
 from app.core.config import get_settings
 from app.llm.gateway import LLMClient
 from app.models import AgentRun, AgentToolCall, PricingEvent, PricingRecommendation, Product
 from app.schemas.common import RecommendationPayload
-from app.tools.pricing_tools import TOOL_SCHEMAS, calculate_margin, execute_tool, get_competitor_context, get_inventory_status, get_sales_summary, min_safe_price, simulate_pricing_options
+from app.tools.pricing_tools import TOOL_SCHEMAS, execute_tool, min_safe_price
 
 settings = get_settings()
 
@@ -73,8 +73,14 @@ def _persist_recommendation(db: Session, run: AgentRun, rec: RecommendationPaylo
     return row
 
 
-def _demo_agent(db: Session, run: AgentRun, product: Product) -> PricingRecommendation:
-    # 演示 fallback 依然严格走“调用工具 -> 观察 -> 决策”并写审计。
+def _demo_agent(
+    db: Session,
+    run: AgentRun,
+    product: Product,
+    analysis_start: date,
+    analysis_end: date,
+) -> PricingRecommendation:
+    """确定性 fallback：仍严格走工具，并把最近7天真实趋势纳入定价。"""
     def call(name, args):
         t = time.perf_counter(); ok = True; result = None
         try:
@@ -85,41 +91,159 @@ def _demo_agent(db: Session, run: AgentRun, product: Product) -> PricingRecommen
             _persist_tool(db, run.id, name, args, result, ok, int((time.perf_counter()-t)*1000))
 
     comp = call("get_competitor_context", {"product_id": product.id})
+    trend = call(
+        "get_price_trend",
+        {
+            "product_id": product.id,
+            "start_date": analysis_start.isoformat(),
+            "end_date": analysis_end.isoformat(),
+        },
+    )
     sales = call("get_sales_summary", {"product_id": product.id, "days": 7})
     inventory = call("get_inventory_status", {"product_id": product.id})
+    current_margin = call("calculate_margin", {"product_id": product.id, "candidate_price": product.current_price})
+
     floor = min_safe_price(product)
-    comp_prices = [c["current_price"] for c in comp["competitors"] if c.get("current_price")]
-    min_comp = min(comp_prices) if comp_prices else product.current_price
-    target = max(floor, round(min(product.current_price * 0.95, max(min_comp + 3, product.current_price * 0.9)), 2))
-    sims = call("simulate_pricing_options", {"product_id": product.id, "candidate_list": [product.current_price, target], "strategy": "compare"})
-    data_low = sales["data_days"] < 3
-    if data_low:
-        rec = RecommendationPayload(
-            action="NEED_MORE_DATA", suggested_price=None,
-            evidence_summary=[f"当前库存 {product.stock} 件", f"竞品最低价约 {min_comp:.2f} 元"],
-            risk_notes=["近期销量数据不足，不建议仅凭竞品价格机械跟价"], data_completeness="LOW",
-            need_user_inputs=["补充至少 3 天销量数据"], next_check_after_hours=12,
+    comp_prices = [
+        float(c.get("current_price") or c.get("current_price_cny"))
+        for c in comp.get("competitors", [])
+        if c.get("current_price") is not None or c.get("current_price_cny") is not None
+    ]
+    market_stats = comp.get("market_stats") or {}
+    trend_summary = trend.get("summary") or {}
+    market_avg = (
+        trend_summary.get("latest_market_avg_price")
+        or market_stats.get("average_price")
+        or (round(sum(comp_prices) / len(comp_prices), 2) if comp_prices else None)
+    )
+    market_min = market_stats.get("min_price") or (min(comp_prices) if comp_prices else None)
+    market_max = market_stats.get("max_price") or (max(comp_prices) if comp_prices else None)
+    trend_direction = trend_summary.get("trend") or "insufficient"
+    trend_percent = trend_summary.get("trend_percent")
+    price_gap_percent = (
+        round((product.current_price - market_avg) / market_avg * 100, 2)
+        if market_avg
+        else None
+    )
+
+    # 先生成受安全底价和单次10%调价约束保护的候选价格。
+    target = float(product.current_price)
+    strategy = "稳定观察"
+    action = "KEEP_PRICE"
+    stock_pressure = product.stock >= 80 or (inventory.get("estimated_days_cover") or 0) > 20
+    if market_avg is not None and price_gap_percent is not None:
+        if price_gap_percent > 8 and stock_pressure:
+            target = max(floor, min(product.current_price * 0.95, market_avg * 1.05))
+            strategy = "适度降价"
+            action = "ADJUST_PRICE"
+        elif trend_direction == "up" and price_gap_percent < -5:
+            target = max(floor, min(product.current_price * 1.03, market_avg))
+            strategy = "小幅提价"
+            action = "ADJUST_PRICE"
+        elif stock_pressure and price_gap_percent > 3:
+            target = max(floor, product.current_price * 0.97)
+            strategy = "限时促销"
+            action = "LIMITED_PROMOTION"
+
+    min_allowed = product.current_price * (1 - settings.default_max_price_change_percent / 100)
+    max_allowed = product.current_price * (1 + settings.default_max_price_change_percent / 100)
+    target = round(max(floor, min(max(target, min_allowed), max_allowed)), 2)
+    if abs(target - product.current_price) < 0.01:
+        action = "KEEP_PRICE"
+        strategy = "稳定观察"
+        target = float(product.current_price)
+
+    sims = call(
+        "simulate_pricing_options",
+        {"product_id": product.id, "candidate_list": [product.current_price, target], "strategy": "7_day_market_compare"},
+    )
+    target_option = next((x for x in sims["options"] if abs(x["candidate_price"] - target) < 0.011), sims["options"][-1])
+
+    evidence = []
+    if market_avg is not None:
+        evidence.append(
+            f"当前售价 {product.current_price:.2f} 元，最近可用市场参考均价约 {market_avg:.2f} 元，价差约 {price_gap_percent:.1f}%。"
         )
-    elif min_comp <= product.current_price * 0.9 and inventory.get("estimated_days_cover") and inventory["estimated_days_cover"] > 20:
-        rec = RecommendationPayload(
-            action="ADJUST_PRICE", suggested_price=target,
-            evidence_summary=[f"竞品最低价约 {min_comp:.2f} 元", f"近7日销量趋势 {sales['trend']} ({sales['trend_percent']}%)", f"库存预计可售 {inventory['estimated_days_cover']} 天", f"安全底价 {floor:.2f} 元"],
-            risk_notes=["不建议直接跟到竞品最低价，避免毛利过度压缩"], data_completeness="HIGH", next_check_after_hours=12,
+    if trend_direction != "insufficient" and trend_percent is not None:
+        direction_text = {"up": "上涨", "down": "下降", "stable": "平稳"}.get(trend_direction, trend_direction)
+        evidence.append(
+            f"所选7天窗口内竞品市场均价趋势为{direction_text}，首末均价变化约 {trend_percent:.1f}%。"
         )
     else:
-        rec = RecommendationPayload(
-            action="KEEP_PRICE", suggested_price=product.current_price,
-            evidence_summary=[f"竞品最低价约 {min_comp:.2f} 元", f"近7日销量趋势 {sales['trend']}", f"安全底价 {floor:.2f} 元"],
-            risk_notes=["市场变化尚不足以支持更激进调价"], data_completeness="HIGH", next_check_after_hours=24,
-        )
-    run.step_count = 4
+        evidence.append("真实竞品历史不足2个有效日期，本次趋势结论主要依赖当前竞品快照，不补造缺失历史。")
+    evidence.append(
+        f"当前成本 {product.cost:.2f} 元，安全底价 {floor:.2f} 元；建议价 {target:.2f} 元对应毛利率约 {target_option['margin_rate'] * 100:.1f}%。"
+    )
+    cover = inventory.get("estimated_days_cover")
+    evidence.append(
+        f"当前库存 {product.stock} 件" + (f"，按近7日销量估算可售约 {cover} 天。" if cover is not None else "；当前销量不足以可靠估算可售天数。")
+    )
+
+    risks = ["当前竞品样本仅代表已成功采集的拼多多搜索结果，不代表拼多多全平台绝对销量或全量价格。"]
+    if trend.get("history_insufficient"):
+        risks.append("真实7天历史样本不足，建议继续每日采集后再提高趋势判断权重。")
+    if action in {"ADJUST_PRICE", "LIMITED_PROMOTION"}:
+        risks.append("不建议直接跟随单个最低价，需持续观察调价后的销量和毛利变化。")
+
+    market_days = int(trend_summary.get("market_data_days") or 0)
+    completeness = "HIGH" if market_days >= 3 and sales["data_days"] >= 3 and comp_prices else "MEDIUM" if comp_prices else "LOW"
+    confidence = 0.86 if completeness == "HIGH" else 0.72 if completeness == "MEDIUM" else 0.5
+    risk_level = "LOW" if action == "KEEP_PRICE" and completeness == "HIGH" else "MEDIUM"
+    summary = (
+        f"建议将售价由 {product.current_price:.2f} 元调整至 {target:.2f} 元，采用“{strategy}”策略，在不低于安全底价的前提下兼顾市场竞争力与利润空间。"
+        if action != "KEEP_PRICE"
+        else f"建议暂时维持 {product.current_price:.2f} 元，采用“稳定观察”策略，并继续补充真实7天竞品历史后再评估调价。"
+    )
+
+    rec = RecommendationPayload(
+        action=action,
+        suggested_price=target,
+        promotion={
+            "strategy": strategy,
+            "summary": summary,
+            "confidence": confidence,
+            "risk_level": risk_level,
+            "analysis_window": {"start_date": analysis_start.isoformat(), "end_date": analysis_end.isoformat()},
+            "key_metrics": {
+                "current_price": float(product.current_price),
+                "cost": float(product.cost),
+                "current_margin_rate": current_margin["margin_rate"],
+                "min_safe_price": floor,
+                "market_avg_price": market_avg,
+                "market_min_price": market_min,
+                "market_max_price": market_max,
+                "market_trend": trend_direction,
+                "market_trend_percent": trend_percent,
+                "market_data_days": market_days,
+                "stock": product.stock,
+                "estimated_days_cover": cover,
+                "sales_trend": sales["trend"],
+            },
+        },
+        evidence_summary=evidence,
+        risk_notes=risks,
+        data_completeness=completeness,
+        next_check_after_hours=12 if action != "KEEP_PRICE" else 24,
+        need_user_inputs=[],
+    )
+    run.step_count = 6
     return _persist_recommendation(db, run, _validate_recommendation(product, rec))
 
 
-async def run_agent(db: Session, product_id: int, event_id: int | None = None) -> PricingRecommendation:
+async def run_agent(
+    db: Session,
+    product_id: int,
+    event_id: int | None = None,
+    analysis_start: date | None = None,
+    analysis_end: date | None = None,
+) -> PricingRecommendation:
     product = db.get(Product, product_id)
     if not product:
         raise ValueError("product not found")
+    analysis_end = analysis_end or date.today()
+    analysis_start = analysis_start or (analysis_end - timedelta(days=6))
+    if analysis_end < analysis_start or (analysis_end - analysis_start).days + 1 > 7:
+        raise ValueError("Agent 单次分析窗口必须为最多7天")
     run = AgentRun(product_id=product_id, event_id=event_id,
                    provider=settings.llm_provider if settings.llm_configured else "demo_fallback",
                    model=settings.llm_model if settings.llm_configured else "deterministic-demo")
@@ -127,7 +251,7 @@ async def run_agent(db: Session, product_id: int, event_id: int | None = None) -
 
     if not settings.llm_configured:
         if settings.demo_fallback_enabled:
-            return _demo_agent(db, run, product)
+            return _demo_agent(db, run, product, analysis_start, analysis_end)
         run.status = "failed"; run.error = "LLM not configured"; run.finished_at = datetime.utcnow(); db.commit()
         raise RuntimeError("LLM not configured")
 
@@ -136,6 +260,7 @@ async def run_agent(db: Session, product_id: int, event_id: int | None = None) -
     context = {
         "product_id": product.id, "name": product.name, "current_price": product.current_price,
         "cost": product.cost, "min_margin_rate": product.min_margin_rate, "stock": product.stock,
+        "analysis_window": {"start_date": analysis_start.isoformat(), "end_date": analysis_end.isoformat()},
         "event": {"type": event.event_type, "old": event.old_value, "new": event.new_value} if event else {"type":"MANUAL_ANALYZE"},
     }
     native_mode = settings.llm_native_tool_calling
@@ -195,7 +320,14 @@ async def run_agent(db: Session, product_id: int, event_id: int | None = None) -
             {{
             "action": "KEEP_PRICE | ADJUST_PRICE | LIMITED_PROMOTION | BUNDLE_PROMOTION | NEED_MORE_DATA | PAUSE_AND_OBSERVE",
             "suggested_price": 55.0,
-            "promotion": {{}},
+            "promotion": {{
+                "strategy": "稳定观察",
+                "summary": "一句话最终结论",
+                "confidence": 0.8,
+                "risk_level": "MEDIUM",
+                "analysis_window": {{"start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}},
+                "key_metrics": {{}}
+            }},
             "evidence_summary": [
                 "证据1",
                 "证据2"
@@ -264,5 +396,5 @@ async def run_agent(db: Session, product_id: int, event_id: int | None = None) -
         if settings.demo_fallback_enabled:
             fallback_run = AgentRun(product_id=product_id, event_id=event_id, provider="demo_fallback_after_llm_error", model="deterministic-demo")
             db.add(fallback_run); db.commit(); db.refresh(fallback_run)
-            return _demo_agent(db, fallback_run, product)
+            return _demo_agent(db, fallback_run, product, analysis_start, analysis_end)
         raise

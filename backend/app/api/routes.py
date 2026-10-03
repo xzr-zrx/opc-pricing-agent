@@ -28,6 +28,7 @@ from app.schemas.products import ProductCreate, ProductOut, ProductUpdate
 from app.services.demo import advance_demo, seed_demo
 from app.services.monitor import collect_competitor
 from app.services.marketplace import get_latest_marketplace_competitors, search_and_store_marketplace
+from app.services.trends import ensure_product_price_snapshot, get_price_trend, normalize_date_range
 
 router = APIRouter(prefix="/api")
 
@@ -64,8 +65,11 @@ def update_product(product_id: int, body: ProductUpdate, db: Session = Depends(g
     row = db.get(Product, product_id)
     if not row:
         raise HTTPException(404, "product not found")
+    previous_price = float(row.current_price)
     for key, value in body.model_dump(exclude_unset=True).items():
         setattr(row, key, value)
+    if float(row.current_price) != previous_price:
+        ensure_product_price_snapshot(db, row, source_type="system")
     db.commit()
     db.refresh(row)
     return row
@@ -169,46 +173,36 @@ def collect_one(competitor_id: int, advance: bool = False, db: Session = Depends
 
 
 @router.get("/products/{product_id}/price-history")
-def price_history(product_id: int, db: Session = Depends(get_db)):
-    comps = db.scalars(
-        select(Competitor).where(
-            Competitor.product_id == product_id,
-            Competitor.active.is_(True),
-        )
-    ).all()
-    output = []
-    for competitor in comps:
-        snaps = db.scalars(
-            select(CompetitorPriceSnapshot)
-            .where(CompetitorPriceSnapshot.competitor_id == competitor.id)
-            .order_by(CompetitorPriceSnapshot.collected_at)
-        ).all()
-        output.append(
-            {
-                "competitor_id": competitor.id,
-                "name": competitor.name,
-                "source_type": competitor.source_type,
-                "points": [
-                    {
-                        "time": snap.collected_at.isoformat(),
-                        "price": snap.price,
-                        "promo": snap.promo_text,
-                        "sales": snap.sales,
-                        "success": snap.success,
-                    }
-                    for snap in snaps
-                ],
-            }
-        )
-    return output
+def price_history(
+    product_id: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    mode: str = "real",
+    db: Session = Depends(get_db),
+):
+    try:
+        return get_price_trend(db, product_id, start_date, end_date, mode=mode)
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if message == "product not found" else 422
+        raise HTTPException(status, message) from exc
 
 
 @router.post("/products/{product_id}/analyze")
-async def analyze(product_id: int, event_id: int | None = None, db: Session = Depends(get_db)):
+async def analyze(
+    product_id: int,
+    event_id: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
     try:
-        rec = await run_agent(db, product_id, event_id)
+        analysis_start, analysis_end = normalize_date_range(start_date, end_date)
+        rec = await run_agent(db, product_id, event_id, analysis_start, analysis_end)
     except ValueError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        message = str(exc)
+        status = 404 if message == "product not found" else 422
+        raise HTTPException(status, message) from exc
     return recommendation_to_dict(rec)
 
 
@@ -253,6 +247,12 @@ def runs(product_id: int, db: Session = Depends(get_db)):
         calls = db.scalars(
             select(AgentToolCall).where(AgentToolCall.run_id == run.id).order_by(AgentToolCall.id)
         ).all()
+        recommendation = db.scalar(
+            select(PricingRecommendation)
+            .where(PricingRecommendation.run_id == run.id)
+            .order_by(desc(PricingRecommendation.created_at))
+            .limit(1)
+        )
         output.append(
             {
                 "id": run.id,
@@ -263,6 +263,7 @@ def runs(product_id: int, db: Session = Depends(get_db)):
                 "started_at": run.started_at.isoformat(),
                 "finished_at": run.finished_at.isoformat() if run.finished_at else None,
                 "error": run.error,
+                "recommendation": recommendation_to_dict(recommendation) if recommendation else None,
                 "tool_calls": [
                     {
                         "tool_name": call.tool_name,
@@ -302,12 +303,19 @@ def demo_advance(product_id: int, db: Session = Depends(get_db)):
 
 
 def recommendation_to_dict(row: PricingRecommendation):
+    promotion = json.loads(row.promotion_json)
     return {
         "id": row.id,
         "run_id": row.run_id,
         "action": row.action,
         "suggested_price": row.suggested_price,
-        "promotion": json.loads(row.promotion_json),
+        "promotion": promotion,
+        "strategy": promotion.get("strategy"),
+        "summary": promotion.get("summary"),
+        "confidence": promotion.get("confidence"),
+        "risk_level": promotion.get("risk_level"),
+        "analysis_window": promotion.get("analysis_window"),
+        "key_metrics": promotion.get("key_metrics", {}),
         "evidence_summary": json.loads(row.evidence_json),
         "risk_notes": json.loads(row.risks_json),
         "data_completeness": row.data_completeness,

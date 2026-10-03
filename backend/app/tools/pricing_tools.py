@@ -16,6 +16,11 @@ class SalesSummaryArgs(ProductIdArgs):
     days: int = Field(default=7, ge=1, le=90)
 
 
+class PriceTrendArgs(ProductIdArgs):
+    start_date: date | None = None
+    end_date: date | None = None
+
+
 class MarginArgs(ProductIdArgs):
     candidate_price: float = Field(gt=0)
 
@@ -72,12 +77,20 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
                 "collected_at": latest.collected_at.isoformat(),
                 "recent_prices": [latest.price],
             })
+        prices = [float(item["current_price"]) for item in result if item.get("current_price") is not None]
         return {
             "product_id": product_id,
             "data_source": "pdd_ddk_manual_top5",
             "top5_scope": "current_pdd_search_results_with_sales",
             "price_currency": "CNY",
             "sales_note": "sales / sales_text 来自多多进宝接口展示销量口径；Top5 仅指本次搜索结果，不代表拼多多全平台绝对销量前5。",
+            "market_stats": {
+                "average_price": round(mean(prices), 2) if prices else None,
+                "min_price": round(min(prices), 2) if prices else None,
+                "max_price": round(max(prices), 2) if prices else None,
+                "total_sales_reference": sum(int(item.get("sales") or 0) for item in result),
+                "sample_count": len(result),
+            },
             "competitors": result,
         }
 
@@ -195,6 +208,17 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
     return {"product_id": product_id, "data_source": "existing_collectors", "competitors": result}
 
 
+def get_price_trend_context(
+    db: Session,
+    product_id: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict:
+    from app.services.trends import get_price_trend
+
+    return get_price_trend(db, product_id, start_date, end_date, mode="real")
+
+
 def get_sales_summary(db: Session, product_id: int, days: int = 7) -> dict:
     end = date.today()
     start = end - timedelta(days=days - 1)
@@ -258,7 +282,8 @@ def simulate_pricing_options(db: Session, product_id: int, candidate_list: list[
 
 
 TOOL_SCHEMAS = [
-    {"type":"function","function":{"name":"get_competitor_context","description":"读取竞品价格、销量、近期变化等可验证数据","parameters":ProductIdArgs.model_json_schema()}},
+    {"type":"function","function":{"name":"get_competitor_context","description":"读取当前竞品Top5价格、销量、店铺及市场统计等可验证数据","parameters":ProductIdArgs.model_json_schema()}},
+    {"type":"function","function":{"name":"get_price_trend","description":"读取指定7天范围内真实入库的每日市场均价、最低价、最高价和趋势；历史不足时会明确标记","parameters":PriceTrendArgs.model_json_schema()}},
     {"type":"function","function":{"name":"get_sales_summary","description":"读取并计算最近销量汇总和趋势","parameters":SalesSummaryArgs.model_json_schema()}},
     {"type":"function","function":{"name":"get_inventory_status","description":"读取当前库存及可售天数","parameters":ProductIdArgs.model_json_schema()}},
     {"type":"function","function":{"name":"calculate_margin","description":"确定性计算候选价格的毛利、毛利率和最低安全售价","parameters":MarginArgs.model_json_schema()}},
@@ -270,6 +295,9 @@ def execute_tool(db: Session, name: str, arguments: dict) -> dict:
     if name == "get_competitor_context":
         args = ProductIdArgs.model_validate(arguments)
         return get_competitor_context(db, args.product_id)
+    if name == "get_price_trend":
+        args = PriceTrendArgs.model_validate(arguments)
+        return get_price_trend_context(db, args.product_id, args.start_date, args.end_date)
     if name == "get_sales_summary":
         args = SalesSummaryArgs.model_validate(arguments)
         return get_sales_summary(db, args.product_id, args.days)
