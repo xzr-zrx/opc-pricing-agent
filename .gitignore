@@ -6,3 +6,10 @@ backend/data/
 frontend/node_modules/
 frontend/dist/
 .pytest_cache/
+
+# Playwright 淘宝登录状态（包含登录凭证，禁止提交）
+backend/data/taobao_profile/
+
+# Render 淘宝登录状态 Base64（敏感凭证，禁止提交）
+render_taobao_storage_state_b64.txt
+backend/data/taobao_profile/render_taobao_storage_state_b64.txt

@@ -140,3 +140,49 @@ sudo docker compose logs -f backend
 临时可用 `http://服务器IP:8080` 访问（需云安全组/防火墙放行 TCP 8080）。
 
 正式使用域名时，推荐宿主机 Nginx 反向代理到 `127.0.0.1:8080`。示例见 `deploy/nginx-opc.conf.example`，并用 Certbot 配 HTTPS。
+
+## 淘宝手动竞品查询（本地 MVP）
+
+本功能不会保存淘宝账号密码，也不会绕过验证码。第一次使用时在 Windows 主机上完成一次人工登录，Playwright 只保存浏览器登录状态。
+
+### 1. 本机初始化淘宝登录状态
+
+在项目根目录进入后端：
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m playwright install chromium
+python scripts\taobao_login.py
+```
+
+脚本会打开可见 Chromium。自行扫码/登录淘宝，并确认搜索页可以正常访问，然后回终端按 Enter。登录状态保存到：
+
+```text
+backend/data/taobao_profile/storage_state.json
+```
+
+该文件包含登录凭证，已经被 `.gitignore` 排除，禁止提交到 Git 或分享给他人。
+
+### 2. Docker 启动
+
+保留你现有的 `backend/.env` 配置，然后：
+
+```bash
+docker compose up -d --build
+```
+
+Compose 会把宿主机 `backend/data/taobao_profile` 挂载到后端容器，因此 Docker 内的无头 Chromium 可以复用刚才的登录状态。
+
+### 3. 页面演示顺序
+
+1. 打开 `http://127.0.0.1:8080`。
+2. 选择三个商品中的任意一个。
+3. 点击“查询淘宝竞品”。
+4. 页面显示本次搜索结果中带有效销量数据的 Top5，并保存到 SQLite。
+5. 再单独点击“Agent 定价分析”。
+6. 在 Agent Run 审计中确认 `get_competitor_context` 的 `data_source` 为 `taobao_manual_top5`。
+
+淘宝查询和 Agent 分析是两个独立动作；淘宝查询失败时不会自动用 Mock 结果冒充淘宝真实数据。
