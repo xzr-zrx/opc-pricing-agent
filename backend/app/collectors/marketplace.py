@@ -1,27 +1,30 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
 
 
-SERPER_SHOPPING_URL = "https://google.serper.dev/shopping"
-FRANKFURTER_USD_CNY_URL = "https://api.frankfurter.dev/v2/rate/usd/cny"
+PDD_API_URL = "https://gw-api.pinduoduo.com/api/router"
+PDD_SEARCH_METHOD = "pdd.ddk.goods.search"
 
 
 @dataclass(slots=True)
 class MarketplaceItem:
     title: str
     price_cny: float
-    popularity: int
-    popularity_text: str
+    sales: int
+    sales_text: str
     shop_name: str | None
     url: str
     image_url: str | None
-    rating: float | None
-    original_price_text: str
-    source: str = "google_shopping"
+    goods_id: str
+    goods_sign: str | None
+    original_price_cents: int | None
+    source: str = "pdd_ddk"
 
 
 @dataclass(slots=True)
@@ -29,7 +32,8 @@ class MarketplaceSearchResult:
     items: list[MarketplaceItem]
     scanned_count: int
     valid_count: int
-    usd_cny_rate: float | None
+    request_id: str | None
+    search_id: str | None
 
 
 class MarketplaceCollectorError(RuntimeError):
@@ -40,225 +44,214 @@ class MarketplaceCollectorError(RuntimeError):
         self.status_code = status_code
 
 
-def _parse_price_text(text: str | None) -> tuple[float, str] | None:
-    """解析 Google Shopping 的价格文本。
+def _normalize_param_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
-    当前比赛 MVP 只接受人民币或美元报价：
-    - 人民币直接使用；
-    - 美元使用公开汇率换算为人民币；
-    - 其他币种跳过，避免把不同币种直接拿来做定价比较。
+
+def _build_sign(params: dict[str, object], client_secret: str) -> str:
+    """按拼多多开放平台通用规则生成 MD5 大写签名。"""
+    pieces = []
+    for key in sorted(params):
+        value = params[key]
+        if value is None:
+            continue
+        pieces.append(f"{key}{_normalize_param_value(value)}")
+    raw = f"{client_secret}{''.join(pieces)}{client_secret}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest().upper()
+
+
+def _parse_sales_text(text: str | None) -> int | None:
+    """把平台展示销量文本转为可排序整数。
+
+    支持示例：500、500+、1千+、2.3万+、10万+、已拼4452件、全店总售500万+件。
+    该值仅代表接口返回的 sales_tip 所表达的销量口径。
     """
-    if not text:
+    if text is None:
+        return None
+    raw = str(text).strip().replace(",", "")
+    if not raw:
         return None
 
-    raw = str(text).strip()
-    compact = raw.replace("\u00a0", " ")
-
-    currency = None
-    if re.search(r"(?:CN¥|CNY|￥|¥)", compact, re.IGNORECASE):
-        currency = "CNY"
-    elif re.search(r"(?:US\$|USD)", compact, re.IGNORECASE):
-        currency = "USD"
-    elif "$" in compact and not re.search(r"(?:R\$|A\$|C\$|HK\$|S\$)", compact, re.IGNORECASE):
-        currency = "USD"
-
-    if not currency:
-        return None
-
-    number = re.search(r"(\d[\d,]*(?:\.\d{1,2})?)", compact)
-    if not number:
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([千千万亿]?)", raw)
+    if not match:
         return None
 
     try:
-        value = float(number.group(1).replace(",", ""))
+        number = float(match.group(1))
     except ValueError:
         return None
 
-    if value <= 0:
-        return None
-    return value, currency
+    unit = match.group(2)
+    multiplier = {"": 1, "千": 1_000, "万": 10_000, "亿": 100_000_000}.get(unit, 1)
+    value = int(number * multiplier)
+    return max(value, 0)
 
 
-def _format_popularity(value: int) -> str:
-    if value >= 10000:
-        return f"{value / 10000:.1f}万条评价".replace(".0万", "万")
-    if value >= 1000:
-        return f"{value / 1000:.1f}千条评价".replace(".0千", "千")
-    return f"{value}条评价"
+def _display_sales_text(raw_text: str | None, value: int) -> str:
+    raw = str(raw_text or "").strip()
+    if raw:
+        return raw
+    if value >= 100_000_000:
+        return f"{value / 100_000_000:.1f}亿+".replace(".0亿", "亿")
+    if value >= 10_000:
+        return f"{value / 10_000:.1f}万+".replace(".0万", "万")
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}千+".replace(".0千", "千")
+    return str(value)
 
 
-async def _fetch_usd_cny_rate(client: httpx.AsyncClient) -> float:
+def _safe_int(value: object) -> int | None:
     try:
-        response = await client.get(FRANKFURTER_USD_CNY_URL)
-        response.raise_for_status()
-        payload = response.json()
-        rate = float(payload.get("rate") or 0)
-    except (httpx.HTTPError, ValueError, TypeError) as exc:
-        raise MarketplaceCollectorError(
-            "FX_RATE_UNAVAILABLE",
-            "美元报价换算人民币所需的公开汇率暂时不可用，请稍后重试。",
-            502,
-        ) from exc
-
-    if rate <= 0:
-        raise MarketplaceCollectorError(
-            "FX_RATE_UNAVAILABLE",
-            "公开汇率接口未返回有效的美元兑人民币汇率。",
-            502,
-        )
-    return rate
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 async def search_marketplace(
     keyword: str,
-    api_key: str,
+    client_id: str,
+    client_secret: str,
     timeout_seconds: int = 15,
-    country: str = "us",
-    language: str = "en",
-    max_scan_items: int = 20,
+    max_scan_items: int = 50,
 ) -> MarketplaceSearchResult:
-    """通过 Serper Google Shopping 查询真实电商商品。
+    """通过拼多多多多进宝官方商品搜索接口查询真实竞品。
 
-    Top5 以 ratingCount（公开评论/评分数量）作为“市场热度”排序指标，
-    明确不是销量。价格统一换算为人民币后再入库，避免币种混用。
+    请求使用 pdd.ddk.goods.search，并要求平台按销量降序返回；服务端仍会
+    对成功解析出的 sales_tip 再排序一次，最终只返回当前搜索结果中的 Top5。
     """
-    token = (api_key or "").strip()
-    if not token:
+    app_id = (client_id or "").strip()
+    secret = (client_secret or "").strip()
+    if not app_id or not secret:
         raise MarketplaceCollectorError(
-            "SERPER_API_KEY_MISSING",
-            "尚未配置电商竞品查询 API Key，请在 Render 后端环境变量中设置 SERPER_API_KEY。",
+            "PDD_CREDENTIALS_MISSING",
+            "尚未配置拼多多开放平台凭证，请在 Render 后端环境变量中设置 PDD_CLIENT_ID 和 PDD_CLIENT_SECRET。",
             428,
         )
 
-    timeout = httpx.Timeout(max(5, timeout_seconds))
-    headers = {
-        "X-API-KEY": token,
-        "Content-Type": "application/json",
+    page_size = min(max(max_scan_items, 5), 100)
+    params: dict[str, object] = {
+        "type": PDD_SEARCH_METHOD,
+        "client_id": app_id,
+        "timestamp": int(time.time()),
+        "data_type": "JSON",
+        "keyword": keyword,
+        "page": 1,
+        "page_size": page_size,
+        # 官方多多进宝商品搜索排序：6 表示按销量降序。
+        "sort_type": 6,
+        "with_coupon": False,
     }
-    body = {
-        "q": keyword,
-        "gl": country,
-        "hl": language,
-        "num": min(max(max_scan_items, 5), 100),
-    }
+    params["sign"] = _build_sign(params, secret)
+    form_data = {key: _normalize_param_value(value) for key, value in params.items()}
 
     try:
+        timeout = httpx.Timeout(max(5, timeout_seconds))
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.post(SERPER_SHOPPING_URL, headers=headers, json=body)
-
-            if response.status_code in {401, 403}:
-                raise MarketplaceCollectorError(
-                    "SERPER_AUTH_FAILED",
-                    "电商竞品查询 API Key 无效或没有访问权限，请检查 Render 中的 SERPER_API_KEY。",
-                    502,
-                )
-            if response.status_code == 429:
-                raise MarketplaceCollectorError(
-                    "SERPER_QUOTA_EXHAUSTED",
-                    "免费电商查询额度已用完或请求过于频繁，请稍后重试或检查 Serper 额度。",
-                    429,
-                )
+            response = await client.post(PDD_API_URL, data=form_data)
             response.raise_for_status()
             payload = response.json()
-            raw_items = payload.get("shopping") or []
-            if not isinstance(raw_items, list):
-                raw_items = []
-
-            if not raw_items:
-                raise MarketplaceCollectorError(
-                    "MARKETPLACE_NO_RESULTS",
-                    "未获取到有效的 Google Shopping 竞品结果，请更换关键词后重试。",
-                    404,
-                )
-
-            # 只有确实遇到美元报价时才请求一次公开汇率。
-            parsed_prices = [_parse_price_text(row.get("price")) for row in raw_items[:max_scan_items]]
-            need_usd_rate = any(parsed and parsed[1] == "USD" for parsed in parsed_prices)
-            usd_cny_rate = await _fetch_usd_cny_rate(client) if need_usd_rate else None
-
-    except MarketplaceCollectorError:
-        raise
     except httpx.TimeoutException as exc:
         raise MarketplaceCollectorError(
-            "MARKETPLACE_TIMEOUT",
-            "电商竞品查询超时，请稍后重试。",
+            "PDD_TIMEOUT",
+            "拼多多商品查询超时，请稍后重试。",
             504,
         ) from exc
     except httpx.HTTPError as exc:
         raise MarketplaceCollectorError(
-            "MARKETPLACE_ACCESS_FAILED",
-            "电商竞品查询服务访问失败，请稍后重试。",
+            "PDD_ACCESS_FAILED",
+            "拼多多开放平台访问失败，请稍后重试。",
             502,
         ) from exc
     except (ValueError, TypeError) as exc:
         raise MarketplaceCollectorError(
-            "MARKETPLACE_RESPONSE_INVALID",
-            "电商竞品查询服务返回了无法解析的数据。",
+            "PDD_RESPONSE_INVALID",
+            "拼多多开放平台返回了无法解析的数据。",
             502,
         ) from exc
 
+    error_response = payload.get("error_response") if isinstance(payload, dict) else None
+    if isinstance(error_response, dict):
+        error_code = error_response.get("error_code")
+        error_msg = str(error_response.get("sub_msg") or error_response.get("error_msg") or "接口调用失败")
+        # 不把 client_secret 等请求内容写进错误信息。
+        raise MarketplaceCollectorError(
+            "PDD_API_ERROR",
+            f"拼多多开放平台返回错误（{error_code}）：{error_msg}",
+            502,
+        )
+
+    container = payload.get("goods_search_response") if isinstance(payload, dict) else None
+    if not isinstance(container, dict):
+        raise MarketplaceCollectorError(
+            "PDD_RESPONSE_INVALID",
+            "拼多多开放平台未返回商品搜索结果。",
+            502,
+        )
+
+    raw_items = container.get("goods_list") or []
+    if not isinstance(raw_items, list) or not raw_items:
+        raise MarketplaceCollectorError(
+            "MARKETPLACE_NO_RESULTS",
+            "未获取到有效的拼多多竞品结果，请更换关键词后重试。",
+            404,
+        )
+
     valid: list[MarketplaceItem] = []
-    scan_rows = raw_items[:max_scan_items]
-    for row, parsed in zip(scan_rows, parsed_prices):
-        if not isinstance(row, dict) or not parsed:
+    scan_rows = raw_items[:page_size]
+    for row in scan_rows:
+        if not isinstance(row, dict):
             continue
 
-        title = str(row.get("title") or "").strip()
-        url = str(row.get("link") or "").strip()
-        if not title or not url.startswith(("http://", "https://")):
+        title = str(row.get("goods_name") or "").strip()
+        goods_id_raw = row.get("goods_id")
+        goods_id = str(goods_id_raw or "").strip()
+        sales_text_raw = str(row.get("sales_tip") or "").strip()
+        sales = _parse_sales_text(sales_text_raw)
+
+        group_price_cents = _safe_int(row.get("min_group_price"))
+        normal_price_cents = _safe_int(row.get("min_normal_price"))
+        price_cents = group_price_cents or normal_price_cents
+
+        # Top5 只使用成功解析到标题、价格、销量和可点击商品 ID 的结果。
+        if not title or not goods_id or not price_cents or price_cents <= 0 or sales is None:
             continue
 
-        amount, currency = parsed
-        if currency == "USD":
-            if not usd_cny_rate:
-                continue
-            price_cny = round(amount * usd_cny_rate, 2)
-        else:
-            price_cny = round(amount, 2)
-
-        rating_count_raw = row.get("ratingCount")
-        try:
-            popularity = max(0, int(rating_count_raw or 0))
-        except (TypeError, ValueError):
-            popularity = 0
-
-        rating_raw = row.get("rating")
-        try:
-            rating = float(rating_raw) if rating_raw is not None else None
-        except (TypeError, ValueError):
-            rating = None
-
-        image_url = str(row.get("imageUrl") or row.get("thumbnail") or "").strip() or None
-        shop_name = str(row.get("source") or "").strip() or None
+        shop_name = str(row.get("mall_name") or "").strip() or None
+        image_url = str(row.get("goods_thumbnail_url") or row.get("goods_image_url") or "").strip() or None
+        goods_sign = str(row.get("goods_sign") or "").strip() or None
+        url = f"https://mobile.yangkeduo.com/goods.html?goods_id={goods_id}"
 
         valid.append(
             MarketplaceItem(
                 title=title,
-                price_cny=price_cny,
-                popularity=popularity,
-                popularity_text=_format_popularity(popularity),
+                price_cny=round(price_cents / 100, 2),
+                sales=sales,
+                sales_text=_display_sales_text(sales_text_raw, sales),
                 shop_name=shop_name,
                 url=url,
                 image_url=image_url,
-                rating=rating,
-                original_price_text=str(row.get("price") or "").strip(),
+                goods_id=goods_id,
+                goods_sign=goods_sign,
+                original_price_cents=normal_price_cents,
             )
         )
 
     if not valid:
         raise MarketplaceCollectorError(
             "MARKETPLACE_NO_VALID_COMPETITORS",
-            "搜索结果中没有同时具备有效商品链接和可比较价格的竞品。",
+            "搜索结果中没有同时具备有效价格、销量和商品链接的竞品。",
             404,
         )
 
-    # “热度 Top5”按评论/评分数量排序；评论数相同再按评分排序。
-    valid.sort(key=lambda item: (item.popularity, item.rating or 0), reverse=True)
+    valid.sort(key=lambda item: item.sales, reverse=True)
     top5 = valid[:5]
 
     return MarketplaceSearchResult(
         items=top5,
         scanned_count=len(scan_rows),
         valid_count=len(valid),
-        usd_cny_rate=usd_cny_rate,
+        request_id=str(container.get("request_id") or "").strip() or None,
+        search_id=str(container.get("search_id") or "").strip() or None,
     )

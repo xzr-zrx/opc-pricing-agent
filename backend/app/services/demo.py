@@ -14,7 +14,7 @@ DEMO_PRODUCTS = [
     {
         "name": "照片定制积木人像",
         "sku": "PHOTO_BLOCK_FIGURE",
-        "search_keyword": "custom photo building block figure",
+        "search_keyword": "照片定制积木人像",
         "cost": 25.0,
         "current_price": 69.0,
         "stock": 80,
@@ -22,7 +22,7 @@ DEMO_PRODUCTS = [
     {
         "name": "定制毕业小熊",
         "sku": "GRADUATION_BEAR",
-        "search_keyword": "personalized graduation teddy bear",
+        "search_keyword": "毕业小熊 定制",
         "cost": 22.0,
         "current_price": 59.0,
         "stock": 100,
@@ -30,7 +30,7 @@ DEMO_PRODUCTS = [
     {
         "name": "毕业纪念T恤",
         "sku": "GRADUATION_TSHIRT",
-        "search_keyword": "custom graduation t shirt",
+        "search_keyword": "毕业纪念T恤 定制",
         "cost": 20.0,
         "current_price": 59.0,
         "stock": 120,

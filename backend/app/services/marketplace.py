@@ -12,7 +12,8 @@ from app.core.config import get_settings
 from app.models import Competitor, CompetitorPriceSnapshot, Product
 
 settings = get_settings()
-SOURCE_TYPE = "google_shopping"
+SOURCE_TYPE = "pdd_ddk"
+LEGACY_EXTERNAL_SOURCES = {"taobao", "google_shopping", SOURCE_TYPE}
 
 
 def _latest_snapshot(db: Session, competitor_id: int) -> CompetitorPriceSnapshot | None:
@@ -43,17 +44,15 @@ def get_latest_marketplace_competitors(db: Session, product_id: int) -> dict:
     rows = []
     for competitor in competitors:
         snapshot = _latest_snapshot(db, competitor.id)
-        if not snapshot or snapshot.price is None:
+        if not snapshot or snapshot.price is None or snapshot.sales is None:
             continue
-        popularity = int(snapshot.sales or 0)  # 复用旧字段存“评论数/热度”，不把它对外称作销量。
         rows.append(
             {
                 "competitor_id": competitor.id,
                 "title": competitor.name,
                 "price": snapshot.price,
-                "popularity": popularity,
-                "popularity_text": snapshot.sales_text or f"{popularity}条评价",
-                "rating_text": snapshot.promo_text,
+                "sales": int(snapshot.sales),
+                "sales_text": snapshot.sales_text or str(snapshot.sales),
                 "shop_name": competitor.shop_name,
                 "url": competitor.url,
                 "image_url": competitor.image_url,
@@ -62,24 +61,24 @@ def get_latest_marketplace_competitors(db: Session, product_id: int) -> dict:
             }
         )
 
-    rows.sort(key=lambda row: row["popularity"], reverse=True)
+    rows.sort(key=lambda row: row["sales"], reverse=True)
     rows = rows[:5]
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
 
     queried_at = max((row["collected_at"] for row in rows), default=None)
-    notice = f"本次仅获取到 {len(rows)} 个有效商品。" if 0 < len(rows) < 5 else None
+    notice = f"本次仅获取到 {len(rows)} 个带有效销量数据的商品。" if 0 < len(rows) < 5 else None
     return {
         "product_id": product.id,
         "keyword": product.search_keyword or product.name,
         "source": SOURCE_TYPE,
-        "provider_name": "Google Shopping / Serper",
+        "provider_name": "拼多多 / 多多进宝",
         "queried_at": queried_at,
         "count": len(rows),
-        "ranking_metric": "rating_count",
-        "ranking_label": "评论数热度",
+        "ranking_metric": "sales_tip",
+        "ranking_label": "销量",
         "currency": "CNY",
-        "price_note": "外币报价按查询时公开汇率折算为人民币，仅用于竞品参考。",
+        "price_note": "价格来自多多进宝商品搜索接口，单位统一为人民币元。",
         "notice": notice,
         "items": rows,
     }
@@ -96,23 +95,24 @@ async def search_and_store_marketplace(db: Session, product_id: int) -> dict:
 
     result = await search_marketplace(
         keyword=keyword,
-        api_key=settings.serper_api_key,
-        timeout_seconds=settings.serper_timeout_seconds,
-        country=settings.serper_country,
-        language=settings.serper_language,
-        max_scan_items=settings.serper_max_scan_items,
+        client_id=settings.pdd_client_id,
+        client_secret=settings.pdd_client_secret,
+        timeout_seconds=settings.pdd_timeout_seconds,
+        max_scan_items=settings.pdd_max_scan_items,
     )
     collected_at = datetime.utcnow()
 
     try:
-        old_active = db.scalars(
+        # 一次查询成功后，只让当前 PDD Top5 作为“当前外部竞品”。
+        # 老淘宝/Google Shopping 历史快照仍保留，但不继续显示为 active。
+        old_external = db.scalars(
             select(Competitor).where(
                 Competitor.product_id == product_id,
-                Competitor.source_type == SOURCE_TYPE,
+                Competitor.source_type.in_(LEGACY_EXTERNAL_SOURCES),
                 Competitor.active.is_(True),
             )
         ).all()
-        for competitor in old_active:
+        for competitor in old_external:
             competitor.active = False
 
         for item in result.items:
@@ -143,17 +143,19 @@ async def search_and_store_marketplace(db: Session, product_id: int) -> dict:
                 competitor.image_url = item.image_url
                 competitor.active = True
 
-            rating_text = f"评分 {item.rating:.1f}" if item.rating is not None else None
             raw = json.dumps(
                 {
                     "title": item.title,
                     "price_cny": item.price_cny,
-                    "original_price_text": item.original_price_text,
-                    "popularity": item.popularity,
+                    "sales": item.sales,
+                    "sales_text": item.sales_text,
                     "shop_name": item.shop_name,
                     "url": item.url,
-                    "rating": item.rating,
-                    "usd_cny_rate": result.usd_cny_rate,
+                    "goods_id": item.goods_id,
+                    "goods_sign": item.goods_sign,
+                    "original_price_cents": item.original_price_cents,
+                    "request_id": result.request_id,
+                    "search_id": result.search_id,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -162,11 +164,9 @@ async def search_and_store_marketplace(db: Session, product_id: int) -> dict:
                 CompetitorPriceSnapshot(
                     competitor_id=competitor.id,
                     price=item.price_cny,
-                    promo_text=rating_text,
-                    # 旧表字段名叫 sales。Google Shopping 没有销量，因此只把
-                    # ratingCount 存在这里作为“市场热度数值”，对外一律标注 popularity。
-                    sales=item.popularity,
-                    sales_text=item.popularity_text,
+                    promo_text=None,
+                    sales=item.sales,
+                    sales_text=item.sales_text,
                     collected_at=collected_at,
                     success=True,
                     raw_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
@@ -185,9 +185,9 @@ async def search_and_store_marketplace(db: Session, product_id: int) -> dict:
     payload = get_latest_marketplace_competitors(db, product_id)
     payload["scanned_count"] = result.scanned_count
     payload["valid_count"] = result.valid_count
-    payload["usd_cny_rate"] = result.usd_cny_rate
+    payload["request_id"] = result.request_id
     if len(result.items) < 5:
-        payload["notice"] = f"本次仅获取到 {len(result.items)} 个有效商品。"
+        payload["notice"] = f"本次仅获取到 {len(result.items)} 个带有效销量数据的商品。"
     else:
-        payload["notice"] = "Top5 按 Google Shopping 搜索结果中的评论/评分数量排序，代表市场热度，不等于销量。"
+        payload["notice"] = "Top5 为本次拼多多搜索结果中成功获取到销量数据的商品，按接口展示销量排序；不代表拼多多全平台绝对销量前5。"
     return payload

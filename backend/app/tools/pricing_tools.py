@@ -38,7 +38,50 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
         )
     ).all()
 
-    # 外部电商查询成功后优先读取最近一次 Google Shopping Top5。
+    # 当前主数据源：拼多多多多进宝。查询成功后优先读取最近一次销量 Top5。
+    pdd_with_data = []
+    for competitor in active:
+        if competitor.source_type != "pdd_ddk":
+            continue
+        latest = db.scalar(
+            select(CompetitorPriceSnapshot)
+            .where(
+                CompetitorPriceSnapshot.competitor_id == competitor.id,
+                CompetitorPriceSnapshot.success.is_(True),
+                CompetitorPriceSnapshot.sales.is_not(None),
+            )
+            .order_by(desc(CompetitorPriceSnapshot.collected_at), desc(CompetitorPriceSnapshot.id))
+            .limit(1)
+        )
+        if latest and latest.price is not None:
+            pdd_with_data.append((competitor, latest))
+
+    if pdd_with_data:
+        pdd_with_data.sort(key=lambda pair: pair[1].sales or 0, reverse=True)
+        result = []
+        for competitor, latest in pdd_with_data[:5]:
+            result.append({
+                "competitor_id": competitor.id,
+                "name": competitor.name,
+                "source_type": "pdd_ddk",
+                "current_price": latest.price,
+                "sales": int(latest.sales or 0),
+                "sales_text": latest.sales_text,
+                "shop_name": competitor.shop_name,
+                "url": competitor.url,
+                "collected_at": latest.collected_at.isoformat(),
+                "recent_prices": [latest.price],
+            })
+        return {
+            "product_id": product_id,
+            "data_source": "pdd_ddk_manual_top5",
+            "top5_scope": "current_pdd_search_results_with_sales",
+            "price_currency": "CNY",
+            "sales_note": "sales / sales_text 来自多多进宝接口展示销量口径；Top5 仅指本次搜索结果，不代表拼多多全平台绝对销量前5。",
+            "competitors": result,
+        }
+
+    # 兼容此前 Google Shopping 数据；若没有拼多多数据，可继续读取旧热度 Top5。
     # ratingCount 仅作为“市场热度”指标，绝不伪装成销量。
     market_with_data = []
     for competitor in active:
@@ -129,7 +172,7 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
 
     result = []
     for c in active:
-        if c.source_type in {"taobao", "google_shopping"}:
+        if c.source_type in {"taobao", "google_shopping", "pdd_ddk"}:
             continue
         snaps = db.scalars(
             select(CompetitorPriceSnapshot)
@@ -215,7 +258,7 @@ def simulate_pricing_options(db: Session, product_id: int, candidate_list: list[
 
 
 TOOL_SCHEMAS = [
-    {"type":"function","function":{"name":"get_competitor_context","description":"读取竞品价格、近期变化及外部市场热度等可验证数据","parameters":ProductIdArgs.model_json_schema()}},
+    {"type":"function","function":{"name":"get_competitor_context","description":"读取竞品价格、销量、近期变化等可验证数据","parameters":ProductIdArgs.model_json_schema()}},
     {"type":"function","function":{"name":"get_sales_summary","description":"读取并计算最近销量汇总和趋势","parameters":SalesSummaryArgs.model_json_schema()}},
     {"type":"function","function":{"name":"get_inventory_status","description":"读取当前库存及可售天数","parameters":ProductIdArgs.model_json_schema()}},
     {"type":"function","function":{"name":"calculate_margin","description":"确定性计算候选价格的毛利、毛利率和最低安全售价","parameters":MarginArgs.model_json_schema()}},

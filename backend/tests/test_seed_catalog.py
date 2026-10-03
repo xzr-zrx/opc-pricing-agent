@@ -18,6 +18,6 @@ def test_three_products_are_seeded_idempotently(db):
         "GRADUATION_TSHIRT": 20.0,
     }
     keywords = {row.sku: row.search_keyword for row in rows}
-    assert keywords["PHOTO_BLOCK_FIGURE"] == "custom photo building block figure"
-    assert keywords["GRADUATION_BEAR"] == "personalized graduation teddy bear"
-    assert keywords["GRADUATION_TSHIRT"] == "custom graduation t shirt"
+    assert keywords["PHOTO_BLOCK_FIGURE"] == "照片定制积木人像"
+    assert keywords["GRADUATION_BEAR"] == "毕业小熊 定制"
+    assert keywords["GRADUATION_TSHIRT"] == "毕业纪念T恤 定制"

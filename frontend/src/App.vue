@@ -42,9 +42,8 @@ type MarketplaceItem = {
   competitor_id: number
   title: string
   price: number
-  popularity: number
-  popularity_text: string
-  rating_text?: string | null
+  sales: number
+  sales_text: string
   shop_name?: string | null
   url?: string | null
   image_url?: string | null
@@ -296,13 +295,13 @@ function drawChart() {
         axisLabel: { color: '#8190a8', fontSize: 9 },
       },
       series: visibleSeries.map((item: any, index: number) => ({
-        name: item.source_type === 'google_shopping' ? `Google·${item.name}` : item.source_type === 'taobao' ? `淘宝·${item.name}` : item.name,
+        name: item.source_type === 'pdd_ddk' ? `拼多多·${item.name}` : item.source_type === 'google_shopping' ? `Google·${item.name}` : item.source_type === 'taobao' ? `淘宝·${item.name}` : item.name,
         type: 'line',
         smooth: 0.3,
         symbol: 'circle',
         symbolSize: 4,
         showSymbol: item.points.length <= 2,
-        lineStyle: { width: ['google_shopping', 'taobao'].includes(item.source_type) ? 2.2 : 1.6 },
+        lineStyle: { width: ['pdd_ddk', 'google_shopping', 'taobao'].includes(item.source_type) ? 2.2 : 1.6 },
         areaStyle: index === 0 ? { opacity: 0.04 } : undefined,
         data: item.points.map((point: any) => point.price),
       })),
@@ -379,7 +378,7 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="demo-note">
-        商品成本按项目配置；当前售价、库存、销量与 Mock 竞品属于演示基础数据。竞品卡片展示 Google Shopping 实时查询并入库的公开商品数据。
+        商品成本按项目配置；当前售价、库存、销量与 Mock 竞品属于演示基础数据。竞品卡片展示拼多多多多进宝接口实时查询并入库的公开商品数据。
       </div>
 
       <el-alert
@@ -408,7 +407,7 @@ onBeforeUnmount(() => {
           </article>
           <article class="metric-card">
             <div class="metric-icon"><el-icon><Monitor /></el-icon></div>
-            <div class="metric-copy"><span>当前竞品</span><strong>{{ marketplaceItems.length || activeCompetitorCount }}</strong><small>{{ marketplaceItems.length ? '市场热度 Top5' : '当前启用监控项' }}</small></div>
+            <div class="metric-copy"><span>当前竞品</span><strong>{{ marketplaceItems.length || activeCompetitorCount }}</strong><small>{{ marketplaceItems.length ? '销量 Top5' : '当前启用监控项' }}</small></div>
           </article>
         </section>
 
@@ -433,7 +432,7 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="source-line">
-              <div><span class="source-dot" />Google Shopping</div>
+              <div><span class="source-dot" />拼多多 · 多多进宝</div>
               <span>最近查询：{{ formatTime(marketplaceData?.queried_at) }}</span>
             </div>
             <div v-if="marketplaceData?.keyword" class="keyword-line">搜索词：{{ marketplaceData.keyword }}</div>
@@ -449,7 +448,7 @@ onBeforeUnmount(() => {
                 </template>
               </el-table-column>
               <el-table-column label="价格" width="72"><template #default="scope">¥{{ scope.row.price }}</template></el-table-column>
-              <el-table-column label="热度" width="92"><template #default="scope">{{ scope.row.popularity_text }}</template></el-table-column>
+              <el-table-column label="销量" width="92"><template #default="scope">{{ scope.row.sales_text }}</template></el-table-column>
               <el-table-column prop="shop_name" label="商家" min-width="90" show-overflow-tooltip />
               <el-table-column label="操作" width="58" align="center">
                 <template #default="scope">
@@ -460,11 +459,11 @@ onBeforeUnmount(() => {
             <div v-else class="marketplace-empty">
               <el-icon><Search /></el-icon>
               <strong>尚无实时竞品数据</strong>
-              <span>先在 Render 后端配置 SERPER_API_KEY，再点击右上角按钮。</span>
+              <span>先在 Render 后端配置 PDD_CLIENT_ID 和 PDD_CLIENT_SECRET，再点击右上角按钮。</span>
             </div>
 
             <div class="monitor-foot">
-              <span>Top5 按公开评论/评分数量衡量市场热度，不等于销量；外币价格按公开汇率折算为人民币。</span>
+              <span>Top5 为本次拼多多搜索结果中带有效销量数据的商品，按接口展示销量排序，不代表拼多多全平台绝对销量前5。</span>
               <el-button text :loading="busy" @click="advance">推进 Mock 场景</el-button>
             </div>
           </article>

@@ -28,12 +28,12 @@ class Settings(BaseSettings):
     default_max_price_change_percent: float = 10.0
     demo_fallback_enabled: bool = True
 
-    # Google Shopping 竞品查询（Serper）。免费试用额度可直接用于比赛 MVP。
-    serper_api_key: str = ""
-    serper_timeout_seconds: int = 15
-    serper_country: str = "us"
-    serper_language: str = "en"
-    serper_max_scan_items: int = 20
+    # 拼多多多多进宝商品查询。使用多多客联盟应用的 client_id / client_secret。
+    # pdd.ddk.goods.search 不依赖浏览器登录状态，适合 Render 直接通过 HTTP 调用。
+    pdd_client_id: str = ""
+    pdd_client_secret: str = ""
+    pdd_timeout_seconds: int = 15
+    pdd_max_scan_items: int = 50
 
     # 淘宝只做手动查询。首次登录由 backend/scripts/taobao_login.py 完成，
     # 查询接口只复用这里的 Playwright storage state，不保存账号密码。

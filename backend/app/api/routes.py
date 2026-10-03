@@ -153,7 +153,7 @@ async def search_marketplace_competitors(product_id: int, db: Session = Depends(
 @router.post("/competitors/{competitor_id}/collect")
 def collect_one(competitor_id: int, advance: bool = False, db: Session = Depends(get_db)):
     competitor = db.get(Competitor, competitor_id)
-    if competitor and competitor.source_type in {"taobao", "google_shopping"}:
+    if competitor and competitor.source_type in {"taobao", "google_shopping", "pdd_ddk"}:
         raise HTTPException(400, "外部电商竞品仅支持商品级手动查询接口")
     try:
         snap, event = collect_competitor(db, competitor_id, advance=advance)
