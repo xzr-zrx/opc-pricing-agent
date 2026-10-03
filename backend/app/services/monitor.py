@@ -48,7 +48,12 @@ def collect_competitor(db: Session, competitor_id: int, advance: bool = False) -
 
 def monitor_all(db: Session) -> list[int]:
     event_ids = []
-    competitors = db.scalars(select(Competitor).where(Competitor.active.is_(True))).all()
+    competitors = db.scalars(
+        select(Competitor).where(
+            Competitor.active.is_(True),
+            Competitor.source_type != "taobao",
+        )
+    ).all()
     for c in competitors:
         _, event = collect_competitor(db, c.id, advance=False)
         if event:

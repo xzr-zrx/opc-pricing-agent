@@ -31,9 +31,61 @@ def min_safe_price(product: Product) -> float:
 
 
 def get_competitor_context(db: Session, product_id: int) -> dict:
-    competitors = db.scalars(select(Competitor).where(Competitor.product_id == product_id, Competitor.active.is_(True))).all()
+    active = db.scalars(
+        select(Competitor).where(
+            Competitor.product_id == product_id,
+            Competitor.active.is_(True),
+        )
+    ).all()
+
+    # 手动淘宝查询成功后，Agent 优先读取当前这一批真实淘宝 Top5。
+    # 若尚无有效淘宝数据，则继续使用项目原有 mock/manual/generic_html 数据。
+    taobao_with_data = []
+    for competitor in active:
+        if competitor.source_type != "taobao":
+            continue
+        latest = db.scalar(
+            select(CompetitorPriceSnapshot)
+            .where(
+                CompetitorPriceSnapshot.competitor_id == competitor.id,
+                CompetitorPriceSnapshot.success.is_(True),
+                CompetitorPriceSnapshot.sales.is_not(None),
+            )
+            .order_by(desc(CompetitorPriceSnapshot.collected_at), desc(CompetitorPriceSnapshot.id))
+            .limit(1)
+        )
+        if latest:
+            taobao_with_data.append((competitor, latest))
+
+    if taobao_with_data:
+        taobao_with_data.sort(key=lambda pair: pair[1].sales or 0, reverse=True)
+        result = []
+        for competitor, latest in taobao_with_data[:5]:
+            result.append({
+                "competitor_id": competitor.id,
+                "name": competitor.name,
+                "source_type": "taobao",
+                "current_price": latest.price,
+                "sales": latest.sales,
+                "sales_text": latest.sales_text,
+                "shop_name": competitor.shop_name,
+                "url": competitor.url,
+                "collected_at": latest.collected_at.isoformat(),
+                "promo_text": latest.promo_text,
+                "change_percent": None,
+                "recent_prices": [latest.price] if latest.price is not None else [],
+            })
+        return {
+            "product_id": product_id,
+            "data_source": "taobao_manual_top5",
+            "top5_scope": "current_search_results_with_sales",
+            "competitors": result,
+        }
+
     result = []
-    for c in competitors:
+    for c in active:
+        if c.source_type == "taobao":
+            continue
         snaps = db.scalars(
             select(CompetitorPriceSnapshot)
             .where(CompetitorPriceSnapshot.competitor_id == c.id, CompetitorPriceSnapshot.success.is_(True))
@@ -46,12 +98,13 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
             change_percent = round((latest.price - previous.price) / previous.price * 100, 2)
         result.append({
             "competitor_id": c.id, "name": c.name,
+            "source_type": c.source_type,
             "current_price": latest.price if latest else None,
             "promo_text": latest.promo_text if latest else None,
             "change_percent": change_percent,
             "recent_prices": [s.price for s in reversed(snaps) if s.price is not None],
         })
-    return {"product_id": product_id, "competitors": result}
+    return {"product_id": product_id, "data_source": "existing_collectors", "competitors": result}
 
 
 def get_sales_summary(db: Session, product_id: int, days: int = 7) -> dict:

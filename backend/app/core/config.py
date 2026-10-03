@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     default_max_price_change_percent: float = 10.0
     demo_fallback_enabled: bool = True
 
+    # 淘宝只做手动查询。首次登录由 backend/scripts/taobao_login.py 完成，
+    # 查询接口只复用这里的 Playwright storage state，不保存账号密码。
+    taobao_storage_state_path: str = "./data/taobao_profile/storage_state.json"
+    # Render/云端部署可把 storage_state.json 转成 Base64 后写入该环境变量。
+    # 若配置，则查询时会优先用它初始化登录状态文件；变量本身不会写入日志。
+    taobao_storage_state_b64: str = ""
+    taobao_search_timeout_seconds: int = 35
+    taobao_headless: bool = True
+    taobao_max_scan_items: int = 60
+
     @property
     def llm_extra_headers(self) -> dict[str, str]:
         try:
@@ -42,6 +52,5 @@ class Settings(BaseSettings):
 
 
 @lru_cache
-
 def get_settings() -> Settings:
     return Settings()

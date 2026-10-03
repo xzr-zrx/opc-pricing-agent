@@ -54,4 +54,6 @@ def collect(c: Competitor, advance: bool = False) -> CollectResult:
         return collect_manual(c)
     if c.source_type == "generic_html":
         return collect_generic_html(c)
+    if c.source_type == "taobao":
+        return CollectResult(False, None, error="taobao source only supports manual search endpoint")
     return CollectResult(False, None, error=f"unsupported source_type: {c.source_type}")

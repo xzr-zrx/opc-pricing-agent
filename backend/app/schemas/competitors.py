@@ -5,6 +5,8 @@ class CompetitorCreate(BaseModel):
     name: str
     source_type: str = "mock"
     url: str | None = None
+    shop_name: str | None = None
+    image_url: str | None = None
     price_selector: str | None = None
     promo_selector: str | None = None
     manual_price: float | None = Field(default=None, gt=0)
@@ -21,6 +23,8 @@ class CompetitorOut(BaseModel):
     name: str
     source_type: str
     url: str | None
+    shop_name: str | None
+    image_url: str | None
     price_selector: str | None
     promo_selector: str | None
     manual_price: float | None

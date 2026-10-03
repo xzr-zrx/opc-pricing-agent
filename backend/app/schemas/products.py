@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ProductCreate(BaseModel):
     name: str
     sku: str | None = None
+    search_keyword: str | None = None
     cost: float = Field(gt=0)
     current_price: float = Field(gt=0)
     min_margin_rate: float = Field(default=0.3, ge=0, lt=1)
@@ -18,6 +19,7 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     name: str | None = None
     sku: str | None = None
+    search_keyword: str | None = None
     cost: float | None = Field(default=None, gt=0)
     current_price: float | None = Field(default=None, gt=0)
     min_margin_rate: float | None = Field(default=None, ge=0, lt=1)
