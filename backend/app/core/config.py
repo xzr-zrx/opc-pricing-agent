@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # pdd.ddk.goods.search 不依赖浏览器登录状态，适合 Render 直接通过 HTTP 调用。
     pdd_client_id: str = ""
     pdd_client_secret: str = ""
+    # 已在多多进宝“推广者登记 -> 推广位管理”中创建，并完成授权备案的 PID。
+    pdd_pid: str = ""
+    # 授权备案时使用的自定义参数；如果没有单独备案 custom_parameters，可留空。
+    # 示例：{"uid":"opc-demo"}
+    pdd_custom_parameters: str = ""
     pdd_timeout_seconds: int = 15
     pdd_max_scan_items: int = 50
 

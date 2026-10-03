@@ -113,6 +113,8 @@ async def search_marketplace(
     keyword: str,
     client_id: str,
     client_secret: str,
+    pid: str,
+    custom_parameters: str = "",
     timeout_seconds: int = 15,
     max_scan_items: int = 50,
 ) -> MarketplaceSearchResult:
@@ -130,6 +132,14 @@ async def search_marketplace(
             428,
         )
 
+    pdd_pid = (pid or "").strip()
+    if not pdd_pid:
+        raise MarketplaceCollectorError(
+            "PDD_PID_MISSING",
+            "尚未配置已备案的拼多多推广位 PID，请在 Render 后端环境变量中设置 PDD_PID。",
+            428,
+        )
+
     page_size = min(max(max_scan_items, 5), 100)
     params: dict[str, object] = {
         "type": PDD_SEARCH_METHOD,
@@ -137,12 +147,17 @@ async def search_marketplace(
         "timestamp": int(time.time()),
         "data_type": "JSON",
         "keyword": keyword,
+        "pid": pdd_pid,
         "page": 1,
         "page_size": page_size,
         # 官方多多进宝商品搜索排序：6 表示按销量降序。
         "sort_type": 6,
         "with_coupon": False,
     }
+    custom = (custom_parameters or "").strip()
+    if custom:
+        # 必须与多多进宝授权备案时使用的 custom_parameters 保持一致。
+        params["custom_parameters"] = custom
     params["sign"] = _build_sign(params, secret)
     form_data = {key: _normalize_param_value(value) for key, value in params.items()}
 

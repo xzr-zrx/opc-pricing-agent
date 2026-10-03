@@ -97,6 +97,8 @@ async def search_and_store_marketplace(db: Session, product_id: int) -> dict:
         keyword=keyword,
         client_id=settings.pdd_client_id,
         client_secret=settings.pdd_client_secret,
+        pid=settings.pdd_pid,
+        custom_parameters=settings.pdd_custom_parameters,
         timeout_seconds=settings.pdd_timeout_seconds,
         max_scan_items=settings.pdd_max_scan_items,
     )
