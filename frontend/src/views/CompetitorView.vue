@@ -39,7 +39,7 @@ function formatTime(value?: string | null) {
       <div>
         <span class="kicker">COMPETITOR MONITORING</span>
         <h2>竞品监控</h2>
-        <p>当前商品：{{ product.name }} · 搜索词：{{ marketplace?.keyword || product.search_keyword || product.name }}</p>
+        <p>{{ product.name }} · 搜索词：{{ marketplace?.keyword || product.search_keyword || product.name }}</p>
       </div>
       <div class="hero-actions">
         <div class="source-chip">拼多多 · 多多进宝</div>
@@ -48,7 +48,7 @@ function formatTime(value?: string | null) {
     </section>
 
     <section class="stats-grid">
-      <article><span>Top5 平均价</span><strong>{{ fmt(stats.avg) }}</strong></article>
+      <article><span>Top5 均价</span><strong>{{ fmt(stats.avg) }}</strong></article>
       <article><span>最低价</span><strong>{{ fmt(stats.min) }}</strong></article>
       <article><span>最高价</span><strong>{{ fmt(stats.max) }}</strong></article>
       <article><span>中位价</span><strong>{{ fmt(stats.median) }}</strong></article>
@@ -65,8 +65,8 @@ function formatTime(value?: string | null) {
         <span class="soft-note">最多展示5条</span>
       </div>
 
-      <el-table v-if="marketplace?.items?.length" :data="marketplace.items" class="market-table">
-        <el-table-column prop="rank" label="排名" width="70" align="center" />
+      <el-table v-if="marketplace?.items?.length" :data="marketplace.items" class="market-table" size="small">
+        <el-table-column prop="rank" label="#" width="50" align="center" />
         <el-table-column label="商品" min-width="300">
           <template #default="scope">
             <div class="product-cell">
@@ -75,10 +75,10 @@ function formatTime(value?: string | null) {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="价格" width="120"><template #default="scope"><b class="price">¥{{ scope.row.price }}</b></template></el-table-column>
-        <el-table-column label="销量" width="140"><template #default="scope">{{ scope.row.sales_text }}</template></el-table-column>
-        <el-table-column prop="shop_name" label="店铺" min-width="150" show-overflow-tooltip />
-        <el-table-column label="操作" width="90" align="center">
+        <el-table-column label="价格" width="100"><template #default="scope"><b class="price">¥{{ scope.row.price }}</b></template></el-table-column>
+        <el-table-column label="销量" width="110"><template #default="scope">{{ scope.row.sales_text }}</template></el-table-column>
+        <el-table-column prop="shop_name" label="店铺" min-width="130" show-overflow-tooltip />
+        <el-table-column label="操作" width="70" align="center">
           <template #default="scope">
             <a v-if="scope.row.url" class="link" :href="scope.row.url" target="_blank" rel="noopener noreferrer"><el-icon><Link /></el-icon>查看</a>
           </template>
@@ -95,20 +95,38 @@ function formatTime(value?: string | null) {
 </template>
 
 <style scoped>
-.page-stack { display: grid; gap: 18px; }
-.hero-card, .surface-card { border: 1px solid #dfe7f1; background: rgba(255,255,255,.92); border-radius: 20px; box-shadow: 0 12px 34px rgba(39,65,102,.06); }
-.hero-card { padding: 22px 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.kicker { color: #5c79c6; font-size: 11px; font-weight: 800; letter-spacing: .14em; }
-h2 { margin: 5px 0; color: #182741; font-size: 26px; } .hero-card p { margin: 0; color: #8491a4; font-size: 13px; }
-.hero-actions { display: flex; align-items: center; gap: 10px; }
-.source-chip, .soft-note { border: 1px solid #dce5f2; background: #f6f9fd; color: #61718a; border-radius: 999px; padding: 8px 12px; font-size: 12px; }
-.stats-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
-.stats-grid article { padding: 16px 18px; border-radius: 16px; background: rgba(255,255,255,.9); border: 1px solid #e0e7f0; box-shadow: 0 8px 24px rgba(39,65,102,.045); }
-.stats-grid span, .stats-grid strong { display: block; } .stats-grid span { color: #8793a5; font-size: 12px; } .stats-grid strong { margin-top: 6px; color: #243650; font-size: 21px; }
-.surface-card { padding: 22px; }
-.section-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
-h3 { margin: 5px 0; color: #1f2f49; font-size: 20px; }.section-head p { margin: 0; color: #909cad; font-size: 12px; }
-.product-cell { display: flex; align-items: center; gap: 12px; min-width: 0; }.product-cell img { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; border: 1px solid #e5ebf3; }.product-cell div { min-width: 0; }.product-cell strong,.product-cell small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.product-cell strong { color: #2c3b53; font-size: 13px; }.product-cell small { margin-top: 5px; color: #98a3b2; font-size: 11px; }
-.price { color: #315fc8; }.link { color: #386bd3; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }.empty-block { min-height: 280px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #929eae; }.empty-block .el-icon { font-size: 30px; color: #aab8ca; }.empty-block strong { color: #596980; font-size: 15px; }.empty-block span { font-size: 13px; }.footer-note { margin-top: 14px; color: #909bab; font-size: 12px; line-height: 1.6; }
-@media(max-width:1100px){.stats-grid{grid-template-columns:repeat(2,1fr)}.hero-card{align-items:flex-start;flex-direction:column}}@media(max-width:680px){.stats-grid{grid-template-columns:1fr}.hero-actions{width:100%;flex-wrap:wrap}}
+.page-stack { height:100%; min-height:0; display:grid; grid-template-rows:auto auto minmax(0,1fr); gap:10px; }
+.hero-card,.surface-card { border:1px solid rgba(218,228,241,.96); background:linear-gradient(145deg,rgba(253,254,255,.96),rgba(246,249,253,.94)); border-radius:16px; box-shadow:0 9px 24px rgba(42,72,110,.055), inset 0 1px 0 rgba(255,255,255,.86); }
+.hero-card { padding:12px 16px; display:flex; align-items:center; justify-content:space-between; gap:14px; }
+.kicker { color:#5d79c5; font-size:9px; font-weight:800; letter-spacing:.13em; }
+h2 { margin:3px 0 2px; color:#182741; font-size:18px; line-height:1.2; }
+.hero-card p { margin:0; color:#8794a7; font-size:10px; }
+.hero-actions { display:flex; align-items:center; gap:7px; }
+.source-chip,.soft-note { border:1px solid #dce6f1; background:#f4f8fc; color:#61718a; border-radius:999px; padding:6px 9px; font-size:10px; }
+.stats-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; }
+.stats-grid article { padding:10px 12px; border-radius:13px; background:linear-gradient(145deg,rgba(253,254,255,.95),rgba(246,249,253,.92)); border:1px solid #dfe8f2; box-shadow:0 6px 17px rgba(39,65,102,.04); }
+.stats-grid span,.stats-grid strong { display:block; }
+.stats-grid span { color:#8793a5; font-size:10px; }
+.stats-grid strong { margin-top:3px; color:#243650; font-size:17px; line-height:1.05; }
+.surface-card { min-height:0; padding:12px 15px 9px; display:flex; flex-direction:column; overflow:hidden; }
+.section-head { flex:0 0 auto; display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:7px; }
+h3 { margin:2px 0; color:#1f2f49; font-size:15px; }
+.section-head p { margin:0; color:#909cad; font-size:9.5px; }
+.market-table { flex:1 1 auto; min-height:0; }
+.product-cell { display:flex; align-items:center; gap:8px; min-width:0; }
+.product-cell img { width:34px; height:34px; border-radius:8px; object-fit:cover; border:1px solid #e3ebf4; }
+.product-cell div { min-width:0; }
+.product-cell strong,.product-cell small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.product-cell strong { color:#2c3b53; font-size:10.5px; }
+.product-cell small { margin-top:2px; color:#98a3b2; font-size:9px; }
+.price { color:#315fc8; font-size:11px; }
+.link { color:#386bd3; text-decoration:none; display:inline-flex; align-items:center; gap:3px; font-size:10px; }
+.empty-block { flex:1; min-height:180px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; color:#929eae; }
+.empty-block .el-icon { font-size:24px; color:#aab8ca; }
+.empty-block strong { color:#596980; font-size:13px; }
+.empty-block span { font-size:10px; }
+.footer-note { flex:0 0 auto; margin-top:6px; padding-top:6px; border-top:1px solid #e8eef4; color:#909bab; font-size:9px; line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+@media(max-width:1100px){.stats-grid{grid-template-columns:repeat(5,1fr)}.hero-card{align-items:center}}
+@media(max-width:980px){.page-stack{height:auto;grid-template-rows:auto}.stats-grid{grid-template-columns:repeat(2,1fr)}.hero-card{align-items:flex-start;flex-direction:column}.surface-card{overflow:visible}}
+@media(max-width:680px){.stats-grid{grid-template-columns:1fr}.hero-actions{width:100%;flex-wrap:wrap}}
 </style>
