@@ -53,6 +53,24 @@ def _validate_recommendation(product: Product, rec: RecommendationPayload) -> Re
         pct = abs((rec.suggested_price - product.current_price) / product.current_price * 100)
         if pct > settings.default_max_price_change_percent:
             rec.risk_notes.append(f"单次调价幅度 {pct:.1f}% 超过默认 {settings.default_max_price_change_percent:.0f}% ，需人工特别确认")
+
+    # 定价建议页只允许出现商业分析文案。若模型泄露内部能力名称或技术调用过程，
+    # 直接判为无效结果并进入已有的 fallback，而不是把技术日志展示给业务用户。
+    promotion = rec.promotion if isinstance(rec.promotion, dict) else {}
+    visible_text = "\n".join([
+        str(promotion.get("strategy") or ""),
+        str(promotion.get("summary") or ""),
+        *[str(item) for item in rec.evidence_summary],
+        *[str(item) for item in rec.risk_notes],
+    ]).lower()
+    forbidden_terms = (
+        "get_competitor_context", "get_price_trend", "get_sales_summary",
+        "get_inventory_status", "calculate_margin", "simulate_pricing_options",
+        "tool calling", "tool_call", "调用工具", "内部调用", "执行函数", "调用函数",
+        "通过api", "使用api", " api ",
+    )
+    if any(term in visible_text for term in forbidden_terms):
+        raise ValueError("recommendation copy leaked internal implementation details")
     return rec
 
 
@@ -112,45 +130,70 @@ def _demo_agent(
     market_stats = comp.get("market_stats") or {}
     trend_summary = trend.get("summary") or {}
     market_avg = (
-        trend_summary.get("latest_market_avg_price")
-        or market_stats.get("average_price")
+        market_stats.get("average_price")
+        or trend_summary.get("latest_market_avg_price")
         or (round(sum(comp_prices) / len(comp_prices), 2) if comp_prices else None)
     )
+    market_median = market_stats.get("median_price")
     market_min = market_stats.get("min_price") or (min(comp_prices) if comp_prices else None)
     market_max = market_stats.get("max_price") or (max(comp_prices) if comp_prices else None)
+    competitor_count = int(market_stats.get("sample_count") or len(comp_prices))
+    high_sales_range = market_stats.get("high_sales_price_range") or {}
+    high_sales_min = high_sales_range.get("min_price")
+    high_sales_max = high_sales_range.get("max_price")
+    high_sales_avg = high_sales_range.get("average_price")
     trend_direction = trend_summary.get("trend") or "insufficient"
     trend_percent = trend_summary.get("trend_percent")
+    reference_price = market_median or market_avg
     price_gap_percent = (
-        round((product.current_price - market_avg) / market_avg * 100, 2)
-        if market_avg
+        round((product.current_price - reference_price) / reference_price * 100, 2)
+        if reference_price
         else None
     )
 
-    # 先生成受安全底价和单次10%调价约束保护的候选价格。
+    own_prices = [
+        float(day["own_price"]) for day in trend.get("daily", [])
+        if day.get("own_price") is not None
+    ]
+    own_7d_min = min(own_prices) if own_prices else None
+    own_7d_max = max(own_prices) if own_prices else None
+    if own_7d_min is not None and own_7d_max is not None and own_7d_max > own_7d_min:
+        own_position = round((float(product.current_price) - own_7d_min) / (own_7d_max - own_7d_min), 3)
+    elif own_prices:
+        own_position = 0.5
+    else:
+        own_position = None
+
+    # 候选价以市场中位价与高销量价格带为主要锚点，并受安全底价和单次调价上限保护。
     target = float(product.current_price)
-    strategy = "稳定观察"
+    strategy = "保持价格"
     action = "KEEP_PRICE"
-    stock_pressure = product.stock >= 80 or (inventory.get("estimated_days_cover") or 0) > 20
-    if market_avg is not None and price_gap_percent is not None:
-        if price_gap_percent > 8 and stock_pressure:
-            target = max(floor, min(product.current_price * 0.95, market_avg * 1.05))
-            strategy = "适度降价"
+    cover = inventory.get("estimated_days_cover")
+    stock_pressure = product.stock >= 80 or (cover or 0) > 20
+    if reference_price is not None and price_gap_percent is not None:
+        if price_gap_percent > 6 and (stock_pressure or trend_direction == "down"):
+            commercial_anchor = high_sales_avg or reference_price
+            target = max(floor, min(product.current_price * 0.96, commercial_anchor * 1.02))
+            strategy = "小幅降价"
             action = "ADJUST_PRICE"
-        elif trend_direction == "up" and price_gap_percent < -5:
-            target = max(floor, min(product.current_price * 1.03, market_avg))
-            strategy = "小幅提价"
-            action = "ADJUST_PRICE"
-        elif stock_pressure and price_gap_percent > 3:
+        elif price_gap_percent > 3 and stock_pressure and trend_direction in {"stable", "down"}:
             target = max(floor, product.current_price * 0.97)
             strategy = "限时促销"
             action = "LIMITED_PROMOTION"
+        elif trend_direction == "up" and price_gap_percent < -5:
+            upper_anchor = market_median or market_avg or product.current_price
+            if high_sales_min is not None:
+                upper_anchor = min(upper_anchor, high_sales_min)
+            target = max(floor, min(product.current_price * 1.03, upper_anchor))
+            strategy = "小幅提价"
+            action = "ADJUST_PRICE"
 
     min_allowed = product.current_price * (1 - settings.default_max_price_change_percent / 100)
     max_allowed = product.current_price * (1 + settings.default_max_price_change_percent / 100)
     target = round(max(floor, min(max(target, min_allowed), max_allowed)), 2)
     if abs(target - product.current_price) < 0.01:
         action = "KEEP_PRICE"
-        strategy = "稳定观察"
+        strategy = "保持价格"
         target = float(product.current_price)
 
     sims = call(
@@ -160,40 +203,58 @@ def _demo_agent(
     target_option = next((x for x in sims["options"] if abs(x["candidate_price"] - target) < 0.011), sims["options"][-1])
 
     evidence = []
-    if market_avg is not None:
+    if market_median is not None:
+        comparison = "高于" if product.current_price > market_median else "低于" if product.current_price < market_median else "接近"
+        gap = abs((product.current_price - market_median) / market_median * 100) if market_median else 0
         evidence.append(
-            f"当前售价 {product.current_price:.2f} 元，最近可用市场参考均价约 {market_avg:.2f} 元，价差约 {price_gap_percent:.1f}%。"
+            f"当前售价 {product.current_price:.2f} 元，{comparison}竞品中位价 {market_median:.2f} 元约 {gap:.1f}%，本次有效竞品样本为 {competitor_count} 个。"
+        )
+    elif market_avg is not None:
+        evidence.append(
+            f"当前售价 {product.current_price:.2f} 元，当前竞品参考均价约 {market_avg:.2f} 元，样本为 {competitor_count} 个。"
+        )
+    if high_sales_min is not None and high_sales_max is not None:
+        evidence.append(
+            f"销量排名靠前的商品主要集中在 {high_sales_min:.2f}~{high_sales_max:.2f} 元区间，建议价优先参考该价格带而不是单个最低价。"
         )
     if trend_direction != "insufficient" and trend_percent is not None:
-        direction_text = {"up": "上涨", "down": "下降", "stable": "平稳"}.get(trend_direction, trend_direction)
+        direction_text = {"up": "上涨", "down": "下降", "stable": "稳定"}.get(trend_direction, trend_direction)
         evidence.append(
-            f"所选7天窗口内竞品市场均价趋势为{direction_text}，首末均价变化约 {trend_percent:.1f}%。"
+            f"最近7天市场均价整体{direction_text}，首末均价变化约 {trend_percent:.1f}%，当前策略据此控制调价幅度。"
         )
     else:
-        evidence.append("真实竞品历史不足2个有效日期，本次趋势结论主要依赖当前竞品快照，不补造缺失历史。")
+        evidence.append("最近7天有效市场历史不足，趋势权重已降低，本次更侧重当前竞品结构和利润底线。")
     evidence.append(
-        f"当前成本 {product.cost:.2f} 元，安全底价 {floor:.2f} 元；建议价 {target:.2f} 元对应毛利率约 {target_option['margin_rate'] * 100:.1f}%。"
+        f"商品成本 {product.cost:.2f} 元、最低安全价 {floor:.2f} 元；建议价 {target:.2f} 元对应毛利率约 {target_option['margin_rate'] * 100:.1f}%。"
     )
-    cover = inventory.get("estimated_days_cover")
-    evidence.append(
-        f"当前库存 {product.stock} 件" + (f"，按近7日销量估算可售约 {cover} 天。" if cover is not None else "；当前销量不足以可靠估算可售天数。")
-    )
+    if len(evidence) < 5:
+        evidence.append(
+            f"当前库存 {product.stock} 件" + (f"，按近7日销量估算可售约 {cover} 天，库存压力已纳入策略。" if cover is not None else "，现有销量数据不足以可靠估算可售天数。")
+        )
+    evidence = evidence[:5]
 
-    risks = ["当前竞品样本仅代表已成功采集的拼多多搜索结果，不代表拼多多全平台绝对销量或全量价格。"]
+    risks = ["竞品销量为当前搜索结果的公开销量参考口径，不代表全平台绝对销量排名。"]
     if trend.get("history_insufficient"):
-        risks.append("真实7天历史样本不足，建议继续每日采集后再提高趋势判断权重。")
+        risks.append("最近7天真实历史样本不足，市场趋势判断的置信度有限。")
     if action in {"ADJUST_PRICE", "LIMITED_PROMOTION"}:
-        risks.append("不建议直接跟随单个最低价，需持续观察调价后的销量和毛利变化。")
+        risks.append("调价后仍需观察销量与毛利变化，避免因短期价格竞争造成利润损失。")
 
     market_days = int(trend_summary.get("market_data_days") or 0)
-    completeness = "HIGH" if market_days >= 3 and sales["data_days"] >= 3 and comp_prices else "MEDIUM" if comp_prices else "LOW"
-    confidence = 0.86 if completeness == "HIGH" else 0.72 if completeness == "MEDIUM" else 0.5
+    if competitor_count >= 10 and market_days >= 3 and sales["data_days"] >= 3:
+        completeness = "HIGH"
+    elif competitor_count > 0:
+        completeness = "MEDIUM"
+    else:
+        completeness = "LOW"
+    confidence = 0.9 if completeness == "HIGH" else 0.74 if completeness == "MEDIUM" else 0.5
     risk_level = "LOW" if action == "KEEP_PRICE" and completeness == "HIGH" else "MEDIUM"
-    summary = (
-        f"建议将售价由 {product.current_price:.2f} 元调整至 {target:.2f} 元，采用“{strategy}”策略，在不低于安全底价的前提下兼顾市场竞争力与利润空间。"
-        if action != "KEEP_PRICE"
-        else f"建议暂时维持 {product.current_price:.2f} 元，采用“稳定观察”策略，并继续补充真实7天竞品历史后再评估调价。"
-    )
+    if completeness == "LOW":
+        risk_level = "HIGH"
+
+    if action == "KEEP_PRICE":
+        summary = f"建议维持 {product.current_price:.2f} 元；当前价格与主流竞品价格带及近期市场趋势没有形成足够强的调价信号。"
+    else:
+        summary = f"建议售价调整至 {target:.2f} 元，采用“{strategy}”策略，在保持安全毛利的同时提高当前市场价格带内的竞争力。"
 
     rec = RecommendationPayload(
         action=action,
@@ -209,19 +270,27 @@ def _demo_agent(
                 "cost": float(product.cost),
                 "current_margin_rate": current_margin["margin_rate"],
                 "min_safe_price": floor,
+                "competitor_count": competitor_count,
                 "market_avg_price": market_avg,
+                "market_median_price": market_median,
                 "market_min_price": market_min,
                 "market_max_price": market_max,
+                "high_sales_price_min": high_sales_min,
+                "high_sales_price_max": high_sales_max,
                 "market_trend": trend_direction,
                 "market_trend_percent": trend_percent,
                 "market_data_days": market_days,
+                "own_7d_min_price": own_7d_min,
+                "own_7d_max_price": own_7d_max,
+                "own_7d_position": own_position,
                 "stock": product.stock,
                 "estimated_days_cover": cover,
                 "sales_trend": sales["trend"],
+                "price_distribution": market_stats.get("price_distribution") or [],
             },
         },
         evidence_summary=evidence,
-        risk_notes=risks,
+        risk_notes=risks[:3],
         data_completeness=completeness,
         next_check_after_hours=12 if action != "KEEP_PRICE" else 24,
         need_user_inputs=[],

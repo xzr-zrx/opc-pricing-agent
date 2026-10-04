@@ -62,12 +62,12 @@ def get_latest_marketplace_competitors(db: Session, product_id: int) -> dict:
         )
 
     rows.sort(key=lambda row: row["sales"], reverse=True)
-    rows = rows[:5]
+    rows = rows[:15]
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
 
     queried_at = max((row["collected_at"] for row in rows), default=None)
-    notice = f"本次仅获取到 {len(rows)} 个带有效销量数据的商品。" if 0 < len(rows) < 5 else None
+    notice = f"本次仅获取到 {len(rows)} 个带有效销量数据的商品。" if 0 < len(rows) < 15 else None
     return {
         "product_id": product.id,
         "keyword": product.search_keyword or product.name,
@@ -105,7 +105,7 @@ async def search_and_store_marketplace(db: Session, product_id: int) -> dict:
     collected_at = datetime.utcnow()
 
     try:
-        # 一次查询成功后，只让当前 PDD Top5 作为“当前外部竞品”。
+        # 一次查询成功后，只让当前 PDD Top15 作为“当前外部竞品”。
         # 老淘宝/Google Shopping 历史快照仍保留，但不继续显示为 active。
         old_external = db.scalars(
             select(Competitor).where(
@@ -188,8 +188,8 @@ async def search_and_store_marketplace(db: Session, product_id: int) -> dict:
     payload["scanned_count"] = result.scanned_count
     payload["valid_count"] = result.valid_count
     payload["request_id"] = result.request_id
-    if len(result.items) < 5:
+    if len(result.items) < 15:
         payload["notice"] = f"本次仅获取到 {len(result.items)} 个带有效销量数据的商品。"
     else:
-        payload["notice"] = "Top5 为本次拼多多搜索结果中成功获取到销量数据的商品，按接口展示销量排序；不代表拼多多全平台绝对销量前5。"
+        payload["notice"] = "Top15 为本次拼多多搜索结果中成功获取到销量数据的商品，按接口展示销量排序；不代表拼多多全平台绝对销量前15。"
     return payload

@@ -101,6 +101,6 @@ def test_marketplace_store_and_agent_context(db, monkeypatch):
     assert old.active is False
 
     agent_data = get_competitor_context(db, p.id)
-    assert agent_data["data_source"] == "pdd_ddk_manual_top5"
+    assert agent_data["data_source"] == "pdd_ddk_manual_top15"
     assert agent_data["competitors"][0]["sales"] == 23000
     assert "不代表拼多多全平台绝对销量" in agent_data["sales_note"]

@@ -36,7 +36,7 @@ def test_storage_state_invalid_base64_is_rejected(tmp_path):
         raise AssertionError("invalid Base64 should be rejected")
 
 
-def test_agent_prefers_active_taobao_top5(db):
+def test_agent_prefers_active_taobao_top15(db):
     p = Product(name="x", sku="X", cost=10, current_price=30, min_margin_rate=.2, stock=10)
     db.add(p)
     db.flush()
@@ -50,7 +50,7 @@ def test_agent_prefers_active_taobao_top5(db):
     db.commit()
 
     data = get_competitor_context(db, p.id)
-    assert data["data_source"] == "taobao_manual_top5"
+    assert data["data_source"] == "taobao_manual_top15"
     assert len(data["competitors"]) == 1
     assert data["competitors"][0]["sales"] == 2300
     assert data["competitors"][0]["current_price"] == 25
@@ -86,5 +86,5 @@ def test_search_and_store_replaces_current_taobao_set(db, monkeypatch):
     assert old.active is False
 
     agent_data = get_competitor_context(db, p.id)
-    assert agent_data["data_source"] == "taobao_manual_top5"
+    assert agent_data["data_source"] == "taobao_manual_top15"
     assert [x["sales"] for x in agent_data["competitors"]] == [23000, 18000]

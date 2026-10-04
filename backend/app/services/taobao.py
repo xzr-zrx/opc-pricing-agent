@@ -60,12 +60,12 @@ def get_latest_taobao_competitors(db: Session, product_id: int) -> dict:
         )
 
     rows.sort(key=lambda row: row["sales"], reverse=True)
-    rows = rows[:5]
+    rows = rows[:15]
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
 
     queried_at = max((row["collected_at"] for row in rows), default=None)
-    notice = f"本次仅获取到 {len(rows)} 个带销量数据的商品。" if 0 < len(rows) < 5 else None
+    notice = f"本次仅获取到 {len(rows)} 个带销量数据的商品。" if 0 < len(rows) < 15 else None
     return {
         "product_id": product.id,
         "keyword": product.search_keyword or product.name,
@@ -165,8 +165,8 @@ async def search_and_store_taobao(db: Session, product_id: int) -> dict:
     payload = get_latest_taobao_competitors(db, product_id)
     payload["scanned_count"] = result.scanned_count
     payload["valid_count"] = result.valid_count
-    if len(result.items) < 5:
+    if len(result.items) < 15:
         payload["notice"] = f"本次仅获取到 {len(result.items)} 个带销量数据的商品。"
     else:
-        payload["notice"] = "Top5 为本次淘宝搜索结果中按页面显示销量排序后的前 5 个有效商品。"
+        payload["notice"] = "Top15 为本次淘宝搜索结果中按页面显示销量排序后的前 15 个有效商品。"
     return payload

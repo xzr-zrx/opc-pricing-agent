@@ -22,32 +22,30 @@ defineProps<{
 
 <style scoped>
 .metric-card {
-  min-height: 76px;
+  min-height: 72px;
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 11px 13px;
-  border: 1px solid rgba(218, 228, 241, .96);
-  border-radius: 15px;
-  background: linear-gradient(145deg, rgba(253, 254, 255, .96), rgba(246, 250, 254, .94));
-  box-shadow: 0 8px 22px rgba(42, 73, 116, .055), inset 0 1px 0 rgba(255,255,255,.8);
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #dfe6ee;
+  border-radius: 10px;
+  background: #fff;
 }
 .metric-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 11px;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
   display: grid;
   place-items: center;
-  color: #3f68c8;
-  background: linear-gradient(145deg, #eaf2ff, #f5f9ff);
-  border: 1px solid #dbe7fb;
+  color: #3568d4;
+  background: #eef4ff;
+  border: 1px solid #dce7fb;
   flex: 0 0 auto;
-  box-shadow: 0 5px 12px rgba(67, 104, 189, .08);
 }
-.metric-icon :deep(svg) { width: 17px; height: 17px; }
+.metric-icon :deep(svg) { width: 16px; height: 16px; }
 .metric-body { min-width: 0; }
 .metric-body > span, .metric-body > strong, .metric-body > small { display: block; }
-.metric-body > span { color: #78869a; font-size: 11px; font-weight: 600; }
-.metric-body > strong { margin: 3px 0 2px; color: #182842; font-size: 21px; line-height: 1.05; letter-spacing: -.035em; }
-.metric-body > small { color: #9aa6b6; font-size: 10px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric-body > span { color: #748195; font-size: 11px; font-weight: 600; }
+.metric-body > strong { margin: 3px 0 2px; color: #1d2d43; font-size: 20px; line-height: 1.05; letter-spacing: -.02em; }
+.metric-body > small { color: #8d98a7; font-size: 10.5px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>

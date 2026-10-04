@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from statistics import mean
+from statistics import mean, median
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 from app.models import Competitor, CompetitorPriceSnapshot, Product, SalesDaily
+
+
+TOP_COMPETITOR_LIMIT = 15
 
 
 class ProductIdArgs(BaseModel):
@@ -35,7 +38,89 @@ def min_safe_price(product: Product) -> float:
     return round(max(margin_floor, product.user_min_price or 0), 2)
 
 
+def _price_distribution(items: list[dict], price_key: str, sales_key: str) -> list[dict]:
+    rows = [
+        item for item in items
+        if item.get(price_key) is not None
+    ]
+    rows.sort(key=lambda item: float(item[price_key]))
+    if not rows:
+        return []
+
+    size = len(rows)
+    # 三段式分布便于 Agent 直接解释“低价/主流/高价”市场结构。
+    cut1 = max(1, size // 3)
+    cut2 = max(cut1 + 1, (size * 2) // 3) if size >= 3 else size
+    groups = [
+        ("低价段", rows[:cut1]),
+        ("主流价段", rows[cut1:cut2]),
+        ("高价段", rows[cut2:]),
+    ]
+    output = []
+    for label, group in groups:
+        if not group:
+            continue
+        prices = [float(item[price_key]) for item in group]
+        output.append({
+            "label": label,
+            "min_price": round(min(prices), 2),
+            "max_price": round(max(prices), 2),
+            "sample_count": len(group),
+            "sales_reference": sum(int(item.get(sales_key) or 0) for item in group),
+        })
+    return output
+
+
+def _market_stats(items: list[dict], current_price: float, *, price_key: str = "current_price", sales_key: str = "sales") -> dict:
+    prices = [float(item[price_key]) for item in items if item.get(price_key) is not None]
+    if not prices:
+        return {
+            "average_price": None,
+            "median_price": None,
+            "min_price": None,
+            "max_price": None,
+            "total_sales_reference": 0,
+            "sample_count": 0,
+            "price_distribution": [],
+            "high_sales_price_range": None,
+            "current_vs_average_percent": None,
+            "current_vs_median_percent": None,
+        }
+
+    avg_price = round(mean(prices), 2)
+    median_price = round(float(median(prices)), 2)
+    ranked_by_sales = sorted(items, key=lambda item: int(item.get(sales_key) or 0), reverse=True)
+    high_sales_rows = ranked_by_sales[: min(5, len(ranked_by_sales))]
+    high_sales_prices = [float(item[price_key]) for item in high_sales_rows if item.get(price_key) is not None]
+    high_sales_range = None
+    if high_sales_prices:
+        high_sales_range = {
+            "min_price": round(min(high_sales_prices), 2),
+            "max_price": round(max(high_sales_prices), 2),
+            "average_price": round(mean(high_sales_prices), 2),
+            "sample_count": len(high_sales_prices),
+            "basis": "销量排名靠前的最多5个有效竞品",
+        }
+
+    return {
+        "average_price": avg_price,
+        "median_price": median_price,
+        "min_price": round(min(prices), 2),
+        "max_price": round(max(prices), 2),
+        "total_sales_reference": sum(int(item.get(sales_key) or 0) for item in items),
+        "sample_count": len(prices),
+        "price_distribution": _price_distribution(items, price_key, sales_key),
+        "high_sales_price_range": high_sales_range,
+        "current_vs_average_percent": round((current_price - avg_price) / avg_price * 100, 2) if avg_price else None,
+        "current_vs_median_percent": round((current_price - median_price) / median_price * 100, 2) if median_price else None,
+    }
+
+
 def get_competitor_context(db: Session, product_id: int) -> dict:
+    product = db.get(Product, product_id)
+    if not product:
+        raise ValueError("product not found")
+
     active = db.scalars(
         select(Competitor).where(
             Competitor.product_id == product_id,
@@ -43,7 +128,7 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
         )
     ).all()
 
-    # 当前主数据源：拼多多多多进宝。查询成功后优先读取最近一次销量 Top5。
+    # 当前主数据源：拼多多多多进宝。查询成功后优先读取最近一次销量 Top15。
     pdd_with_data = []
     for competitor in active:
         if competitor.source_type != "pdd_ddk":
@@ -64,7 +149,7 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
     if pdd_with_data:
         pdd_with_data.sort(key=lambda pair: pair[1].sales or 0, reverse=True)
         result = []
-        for competitor, latest in pdd_with_data[:5]:
+        for competitor, latest in pdd_with_data[:TOP_COMPETITOR_LIMIT]:
             result.append({
                 "competitor_id": competitor.id,
                 "name": competitor.name,
@@ -77,24 +162,17 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
                 "collected_at": latest.collected_at.isoformat(),
                 "recent_prices": [latest.price],
             })
-        prices = [float(item["current_price"]) for item in result if item.get("current_price") is not None]
         return {
             "product_id": product_id,
-            "data_source": "pdd_ddk_manual_top5",
-            "top5_scope": "current_pdd_search_results_with_sales",
+            "data_source": "pdd_ddk_manual_top15",
+            "top15_scope": "current_pdd_search_results_with_sales",
             "price_currency": "CNY",
-            "sales_note": "sales / sales_text 来自多多进宝接口展示销量口径；Top5 仅指本次搜索结果，不代表拼多多全平台绝对销量前5。",
-            "market_stats": {
-                "average_price": round(mean(prices), 2) if prices else None,
-                "min_price": round(min(prices), 2) if prices else None,
-                "max_price": round(max(prices), 2) if prices else None,
-                "total_sales_reference": sum(int(item.get("sales") or 0) for item in result),
-                "sample_count": len(result),
-            },
+            "sales_note": "sales / sales_text 来自多多进宝接口展示销量口径；Top15 仅指本次搜索结果，不代表拼多多全平台绝对销量前15。",
+            "market_stats": _market_stats(result, float(product.current_price)),
             "competitors": result,
         }
 
-    # 兼容此前 Google Shopping 数据；若没有拼多多数据，可继续读取旧热度 Top5。
+    # 兼容此前 Google Shopping 数据；若没有拼多多数据，可继续读取旧热度样本。
     # ratingCount 仅作为“市场热度”指标，绝不伪装成销量。
     market_with_data = []
     for competitor in active:
@@ -115,7 +193,7 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
     if market_with_data:
         market_with_data.sort(key=lambda pair: pair[1].sales or 0, reverse=True)
         result = []
-        for competitor, latest in market_with_data[:5]:
+        for competitor, latest in market_with_data[:TOP_COMPETITOR_LIMIT]:
             result.append({
                 "competitor_id": competitor.id,
                 "name": competitor.name,
@@ -130,17 +208,22 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
                 "collected_at": latest.collected_at.isoformat(),
                 "recent_prices_cny": [latest.price],
             })
+        normalized = [
+            {"current_price": row["current_price_cny"], "sales": row["popularity_count"]}
+            for row in result
+        ]
         return {
             "product_id": product_id,
-            "data_source": "google_shopping_manual_top5",
-            "top5_scope": "current_search_results_ranked_by_rating_count",
+            "data_source": "google_shopping_manual_top15",
+            "top15_scope": "current_search_results_ranked_by_rating_count",
             "price_currency": "CNY",
             "price_note": "外币报价按查询时公开汇率折算为人民币，仅用于竞品参考。",
             "popularity_note": "popularity_count 为评论/评分数量，代表市场热度，不是销量。",
+            "market_stats": _market_stats(normalized, float(product.current_price)),
             "competitors": result,
         }
 
-    # 兼容已经存在的淘宝历史数据；若没有 Google Shopping 数据，仍可读取旧 Top5。
+    # 兼容已经存在的淘宝历史数据。
     taobao_with_data = []
     for competitor in active:
         if competitor.source_type != "taobao":
@@ -161,7 +244,7 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
     if taobao_with_data:
         taobao_with_data.sort(key=lambda pair: pair[1].sales or 0, reverse=True)
         result = []
-        for competitor, latest in taobao_with_data[:5]:
+        for competitor, latest in taobao_with_data[:TOP_COMPETITOR_LIMIT]:
             result.append({
                 "competitor_id": competitor.id,
                 "name": competitor.name,
@@ -178,8 +261,9 @@ def get_competitor_context(db: Session, product_id: int) -> dict:
             })
         return {
             "product_id": product_id,
-            "data_source": "taobao_manual_top5",
-            "top5_scope": "current_search_results_with_sales",
+            "data_source": "taobao_manual_top15",
+            "top15_scope": "current_search_results_with_sales",
+            "market_stats": _market_stats(result, float(product.current_price)),
             "competitors": result,
         }
 
@@ -260,6 +344,8 @@ def calculate_margin(db: Session, product_id: int, candidate_price: float) -> di
     floor = min_safe_price(p)
     return {
         "product_id": product_id,
+        "current_price": round(float(p.current_price), 2),
+        "cost": round(float(p.cost), 2),
         "candidate_price": round(candidate_price, 2),
         "unit_profit": round(profit, 2),
         "margin_rate": round(margin_rate, 4),
@@ -282,12 +368,12 @@ def simulate_pricing_options(db: Session, product_id: int, candidate_list: list[
 
 
 TOOL_SCHEMAS = [
-    {"type":"function","function":{"name":"get_competitor_context","description":"读取当前竞品Top5价格、销量、店铺及市场统计等可验证数据","parameters":ProductIdArgs.model_json_schema()}},
-    {"type":"function","function":{"name":"get_price_trend","description":"读取指定7天范围内真实入库的每日市场均价、最低价、最高价和趋势；历史不足时会明确标记","parameters":PriceTrendArgs.model_json_schema()}},
+    {"type":"function","function":{"name":"get_competitor_context","description":"读取当前销量排名前15个有效竞品的价格、销量、店铺、价格分布、中位价与高销量价格区间","parameters":ProductIdArgs.model_json_schema()}},
+    {"type":"function","function":{"name":"get_price_trend","description":"读取指定7天范围内真实入库的每日我方价格、市场均价、最低价、最高价和趋势；历史不足时会明确标记","parameters":PriceTrendArgs.model_json_schema()}},
     {"type":"function","function":{"name":"get_sales_summary","description":"读取并计算最近销量汇总和趋势","parameters":SalesSummaryArgs.model_json_schema()}},
     {"type":"function","function":{"name":"get_inventory_status","description":"读取当前库存及可售天数","parameters":ProductIdArgs.model_json_schema()}},
-    {"type":"function","function":{"name":"calculate_margin","description":"确定性计算候选价格的毛利、毛利率和最低安全售价","parameters":MarginArgs.model_json_schema()}},
-    {"type":"function","function":{"name":"simulate_pricing_options","description":"比较多个候选价格的毛利和价格变化幅度","parameters":SimulateArgs.model_json_schema()}},
+    {"type":"function","function":{"name":"calculate_margin","description":"确定性计算候选售价的成本、单位利润、毛利率和最低安全售价","parameters":MarginArgs.model_json_schema()}},
+    {"type":"function","function":{"name":"simulate_pricing_options","description":"比较多个候选售价的毛利和价格变化幅度","parameters":SimulateArgs.model_json_schema()}},
 ]
 
 

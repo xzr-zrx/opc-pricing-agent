@@ -121,7 +121,7 @@ async def search_marketplace(
     """通过拼多多多多进宝官方商品搜索接口查询真实竞品。
 
     请求使用 pdd.ddk.goods.search，并要求平台按销量降序返回；服务端仍会
-    对成功解析出的 sales_tip 再排序一次，最终只返回当前搜索结果中的 Top5。
+    对成功解析出的 sales_tip 再排序一次，最终只返回当前搜索结果中的 Top15。
     """
     app_id = (client_id or "").strip()
     secret = (client_secret or "").strip()
@@ -140,7 +140,7 @@ async def search_marketplace(
             428,
         )
 
-    page_size = min(max(max_scan_items, 5), 100)
+    page_size = min(max(max_scan_items, 15), 100)
     params: dict[str, object] = {
         "type": PDD_SEARCH_METHOD,
         "client_id": app_id,
@@ -229,7 +229,7 @@ async def search_marketplace(
         normal_price_cents = _safe_int(row.get("min_normal_price"))
         price_cents = group_price_cents or normal_price_cents
 
-        # Top5 只使用成功解析到标题、价格、销量和可点击商品 ID 的结果。
+        # Top15 只使用成功解析到标题、价格、销量和可点击商品 ID 的结果。
         if not title or not goods_id or not price_cents or price_cents <= 0 or sales is None:
             continue
 
@@ -261,10 +261,10 @@ async def search_marketplace(
         )
 
     valid.sort(key=lambda item: item.sales, reverse=True)
-    top5 = valid[:5]
+    top15 = valid[:15]
 
     return MarketplaceSearchResult(
-        items=top5,
+        items=top15,
         scanned_count=len(scan_rows),
         valid_count=len(valid),
         request_id=str(container.get("request_id") or "").strip() or None,

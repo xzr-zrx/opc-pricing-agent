@@ -471,4 +471,4 @@ async def search_taobao(
         )
 
     items.sort(key=lambda item: item.sales, reverse=True)
-    return TaobaoSearchResult(items=items[:5], scanned_count=len(raw_items), valid_count=valid_count)
+    return TaobaoSearchResult(items=items[:15], scanned_count=len(raw_items), valid_count=valid_count)
