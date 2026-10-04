@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Box, Money, Monitor, TrendCharts } from '@element-plus/icons-vue'
 import MetricCard from '../components/MetricCard.vue'
 import PriceTrendChart from '../components/PriceTrendChart.vue'
@@ -19,134 +20,230 @@ const emit = defineEmits<{
   search: []
 }>()
 
+const items = computed(() => props.marketplace?.items || [])
+const prices = computed(() => items.value.map((item) => Number(item.price)).filter(Number.isFinite).sort((a, b) => a - b))
+const averagePrice = computed(() => prices.value.length ? prices.value.reduce((sum, value) => sum + value, 0) / prices.value.length : null)
+const medianPrice = computed(() => {
+  if (!prices.value.length) return null
+  const middle = Math.floor(prices.value.length / 2)
+  return prices.value.length % 2 ? prices.value[middle] : (prices.value[middle - 1] + prices.value[middle]) / 2
+})
+const minPrice = computed(() => prices.value.length ? prices.value[0] : null)
+const maxPrice = computed(() => prices.value.length ? prices.value[prices.value.length - 1] : null)
+const totalSales = computed(() => items.value.reduce((sum, item) => sum + Number(item.sales || 0), 0))
+const evidence = computed(() => (props.recommendation?.evidence_summary || []).slice(0, 5))
+const keyMetrics = computed(() => props.recommendation?.key_metrics || {})
+const highSalesBand = computed(() => {
+  const min = keyMetrics.value.high_sales_price_min
+  const max = keyMetrics.value.high_sales_price_max
+  return min != null && max != null ? `${formatPrice(min)} - ${formatPrice(max)}` : '—'
+})
+const bins = computed(() => {
+  const definitions = [
+    { label: '<40', test: (v: number) => v < 40 },
+    { label: '40-50', test: (v: number) => v >= 40 && v < 50 },
+    { label: '50-60', test: (v: number) => v >= 50 && v < 60 },
+    { label: '60-70', test: (v: number) => v >= 60 && v < 70 },
+    { label: '70-80', test: (v: number) => v >= 70 && v < 80 },
+    { label: '>80', test: (v: number) => v >= 80 },
+  ]
+  const counts = definitions.map((bin) => prices.value.filter(bin.test).length)
+  const max = Math.max(1, ...counts)
+  return definitions.map((bin, index) => ({ label: bin.label, count: counts[index], height: Math.max(8, Math.round((counts[index] / max) * 68)) }))
+})
+
 function strategyLabel() {
   return props.recommendation?.strategy || props.recommendation?.promotion?.strategy || '等待分析'
+}
+function formatPrice(value: number | null | undefined) {
+  return value == null || Number.isNaN(Number(value)) ? '—' : `¥${Number(value).toFixed(2)}`
 }
 </script>
 
 <template>
-  <div class="page-stack">
-    <section class="metric-grid">
-      <MetricCard label="当前售价" :value="`¥${product.current_price}`" note="当前挂牌价" :icon="Money" />
-      <MetricCard label="最低安全价" :value="`¥${minSafePrice}`" :note="`成本 ¥${product.cost} · 毛利 ${grossMarginRate}%`" :icon="TrendCharts" />
-      <MetricCard label="可用库存" :value="product.stock" note="当前库存" :icon="Box" />
-      <MetricCard label="当前竞品" :value="marketplace?.count || 0" note="最近一次销量 Top15" :icon="Monitor" />
+  <div class="overview-page">
+    <section class="overview-hero">
+      <div>
+        <span class="hero-kicker">GOOD MORNING</span>
+        <h1>掌握市场动态，制定更智能的价格策略</h1>
+        <p>基于实时竞品数据与市场趋势，提供清晰的定价依据，帮助提升销量与利润。</p>
+      </div>
+      <div class="hero-date">
+        <span>分析窗口</span>
+        <strong>{{ trend?.start_date || '—' }} <i>—</i> {{ trend?.end_date || '—' }}</strong>
+      </div>
     </section>
 
-    <section class="overview-grid">
+    <section class="metric-grid">
+      <MetricCard label="当前售价" :value="formatPrice(product.current_price)" note="当前挂牌价" :icon="Money" tone="blue" />
+      <MetricCard label="成本" :value="formatPrice(product.cost)" note="商品成本" :icon="Monitor" tone="indigo" />
+      <MetricCard label="最低安全价" :value="formatPrice(minSafePrice)" note="满足最低毛利要求" :icon="TrendCharts" tone="blue" />
+      <MetricCard label="毛利率" :value="`${grossMarginRate}%`" note="当前毛利空间" :icon="TrendCharts" tone="green" />
+      <MetricCard label="7天市场均价" :value="formatPrice(trend?.summary.period_market_avg_price)" note="市场平均水平" :icon="TrendCharts" tone="violet" />
+      <MetricCard label="库存" :value="product.stock" note="当前可用库存" :icon="Box" tone="green" />
+    </section>
+
+    <section class="primary-grid">
       <article class="surface-card trend-card">
         <div class="section-head">
           <div>
-            <span class="section-kicker">MARKET TREND</span>
-            <h2>最近7天价格走势</h2>
-            <p>{{ trend?.source_label || '暂无趋势数据' }}</p>
+            <span class="section-kicker">PRICE TREND</span>
+            <h2>近7天价格趋势</h2>
           </div>
-          <el-button text @click="emit('navigate', 'trends')">完整趋势 →</el-button>
+          <button type="button" class="text-link" @click="emit('navigate', 'trends')">查看完整趋势</button>
         </div>
-        <PriceTrendChart :trend="trend" :height="210" compact />
-        <div v-if="trend?.notice" class="inline-note" :class="{ warning: trend.history_insufficient }">
-          {{ trend.notice }}
-        </div>
+        <PriceTrendChart :trend="trend" :height="190" compact />
+        <div v-if="trend?.notice" class="inline-note" :class="{ warning: trend.history_insufficient }">{{ trend.notice }}</div>
       </article>
 
-      <article class="surface-card agent-summary-card">
-        <div class="section-head">
-          <div>
-            <span class="section-kicker">AGENT DECISION</span>
-            <h2>最新定价建议</h2>
-            <p>综合7天趋势与前15个竞品</p>
-          </div>
-          <el-button text @click="emit('navigate', 'pricing')">完整建议 →</el-button>
+      <article class="surface-card recommendation-card">
+        <div class="section-head recommendation-head">
+          <div><span class="section-kicker">PRICING DECISION</span><h2>定价建议</h2></div>
+          <button type="button" class="text-link" @click="emit('navigate', 'pricing')">完整建议</button>
         </div>
-
         <template v-if="recommendation">
-          <div class="decision-hero">
-            <div>
-              <span>建议价格</span>
-              <strong>¥{{ recommendation.suggested_price ?? product.current_price }}</strong>
+          <div class="recommendation-top">
+            <div class="recommended-price">
+              <span>建议售价</span>
+              <strong>{{ formatPrice(recommendation.suggested_price ?? product.current_price) }}</strong>
+              <small>{{ strategyLabel() }}</small>
             </div>
-            <el-tag effect="light" round>{{ strategyLabel() }}</el-tag>
+            <div class="recommendation-meta">
+              <div><span>置信度</span><b>{{ recommendation.confidence != null ? `${Math.round(recommendation.confidence * 100)}%` : '—' }}</b></div>
+              <div><span>风险等级</span><b>{{ recommendation.risk_level || '—' }}</b></div>
+            </div>
           </div>
-          <p class="decision-summary">{{ recommendation.summary || recommendation.promotion?.summary || '已生成定价建议，请进入定价建议页查看完整理由。' }}</p>
-          <div class="decision-meta">
-            <div><span>完整度</span><strong>{{ recommendation.data_completeness }}</strong></div>
-            <div><span>置信度</span><strong>{{ recommendation.confidence != null ? `${Math.round(recommendation.confidence * 100)}%` : '—' }}</strong></div>
-            <div><span>风险</span><strong>{{ recommendation.risk_level || '—' }}</strong></div>
-          </div>
+          <div class="reason-title">建议理由</div>
+          <ol class="overview-reasons ui-scroll">
+            <li v-for="reason in evidence" :key="reason">{{ reason }}</li>
+            <li v-if="!evidence.length">{{ recommendation.summary || '已生成定价建议，可进入定价建议页查看详情。' }}</li>
+          </ol>
         </template>
         <div v-else class="empty-block">
           <strong>尚未生成定价建议</strong>
-          <span>先查询竞品，再运行 Agent 分析。</span>
-          <el-button type="primary" :loading="busy" @click="emit('analyze')">开始 Agent 分析</el-button>
+          <span>先获取竞品数据，再运行 Agent 分析。</span>
+          <el-button type="primary" :loading="busy" @click="emit('analyze')">开始分析</el-button>
         </div>
       </article>
     </section>
 
-    <section class="surface-card top3-card">
-      <div class="section-head compact-head">
-        <div>
-          <span class="section-kicker">LATEST COMPETITORS</span>
-          <h2>最新竞品摘要</h2>
+    <section class="lower-grid">
+      <article class="surface-card competitor-card">
+        <div class="competitor-head">
+          <div class="competitor-title"><h2>Top 15 竞品</h2><span>{{ marketplace?.count || 0 }} 个竞品</span></div>
+          <div class="market-stats">
+            <div><span>平均价</span><strong>{{ formatPrice(averagePrice) }}</strong></div>
+            <div><span>最低价</span><strong>{{ formatPrice(minPrice) }}</strong></div>
+            <div><span>最高价</span><strong>{{ formatPrice(maxPrice) }}</strong></div>
+            <div><span>中位价</span><strong>{{ formatPrice(medianPrice) }}</strong></div>
+            <div><span>销量参考</span><strong>{{ totalSales.toLocaleString() }}</strong></div>
+          </div>
+          <div class="competitor-actions"><el-button @click="emit('search')">查询竞品</el-button><el-button type="primary" @click="emit('navigate', 'competitors')">查看全部</el-button></div>
         </div>
-        <div class="head-actions">
-          <el-button @click="emit('search')">查询竞品</el-button>
-          <el-button type="primary" @click="emit('navigate', 'competitors')">完整竞品</el-button>
+        <div v-if="items.length" class="compact-table ui-scroll">
+          <div class="table-row table-head"><span>#</span><span>商品</span><span>店铺</span><span>价格</span><span>销量参考</span></div>
+          <div v-for="item in items" :key="item.competitor_id" class="table-row">
+            <span>{{ item.rank }}</span>
+            <div class="product-cell">
+              <img v-if="item.image_url" :src="item.image_url" alt="" />
+              <span v-else class="image-fallback">P</span>
+              <b>{{ item.title }}</b>
+            </div>
+            <span class="ellipsis">{{ item.shop_name || '未知店铺' }}</span>
+            <strong class="price-value">{{ formatPrice(item.price) }}</strong>
+            <span>{{ Number(item.sales || 0).toLocaleString() }}</span>
+          </div>
         </div>
-      </div>
-      <div v-if="marketplace?.items?.length" class="top3-grid">
-        <article v-for="item in marketplace.items.slice(0, 3)" :key="item.competitor_id" class="mini-product">
-          <img v-if="item.image_url" :src="item.image_url" alt="" />
-          <div>
-            <strong>{{ item.title }}</strong>
-            <span>¥{{ item.price }} · 销量 {{ item.sales_text }}</span>
-            <small>{{ item.shop_name || '未知店铺' }}</small>
+        <div v-else class="empty-inline">暂无竞品数据，请先执行一次竞品查询。</div>
+      </article>
+
+      <div class="insight-stack">
+        <article class="surface-card distribution-card">
+          <div class="mini-title"><h3>价格带分布</h3><span>{{ items.length }} 个竞品</span></div>
+          <div class="bar-chart">
+            <div v-for="bin in bins" :key="bin.label" class="bar-item">
+              <div class="bar-track"><i :style="{ height: `${bin.height}px` }"></i></div>
+              <strong>{{ bin.count }}</strong><span>{{ bin.label }}</span>
+            </div>
           </div>
         </article>
+        <article class="surface-card sales-band-card">
+          <div class="mini-title"><h3>高销量价格区间</h3></div>
+          <div class="range-visual"><span></span><b>{{ highSalesBand }}</b></div>
+          <small>结合当前竞品销量与 Agent 分析结果</small>
+        </article>
       </div>
-      <div v-else class="empty-inline">暂无实时竞品数据，请先执行一次电商竞品查询。</div>
     </section>
   </div>
 </template>
 
 <style scoped>
-.page-stack { height:100%; min-height:0; display:grid; grid-template-rows:auto minmax(0,1fr) auto; gap:8px; }
-.metric-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
-.overview-grid { min-height:0; display:grid; grid-template-columns:minmax(0,1.55fr) minmax(300px,.75fr); gap:8px; }
-.surface-card { min-height:0; border:1px solid #dfe6ee; background:#fff; border-radius:11px; padding:12px 14px; overflow:hidden; }
-.section-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
-.section-kicker { color:#6178a2; font-size:11px; font-weight:700; }
-h2 { margin:2px 0; color:#1c2b3f; font-size:16px; line-height:1.2; }
-.section-head p { margin:0; color:#7f8b9a; font-size:11px; }
-.inline-note { margin-top:4px; padding:6px 8px; border-radius:7px; background:#eef8f4; color:#4f7468; font-size:10.5px; line-height:1.35; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.inline-note.warning { background:#fff6e8; color:#86662e; }
-.decision-hero { margin-top:9px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 11px; border-radius:9px; background:#f5f8fd; border:1px solid #e0e7f0; }
-.decision-hero span,.decision-hero strong { display:block; }
-.decision-hero span { color:#748195; font-size:11px; }
-.decision-hero strong { margin-top:2px; color:#2457bd; font-size:25px; line-height:1; letter-spacing:-.03em; }
-.decision-summary { color:#596a80; font-size:12px; line-height:1.45; margin:9px 0; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-.decision-meta { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; }
-.decision-meta div { padding:7px 8px; border-radius:8px; background:#f8fafc; border:1px solid #e6ebf1; }
-.decision-meta span,.decision-meta strong { display:block; }
-.decision-meta span { color:#7f8b9a; font-size:10.5px; }
-.decision-meta strong { margin-top:2px; color:#2b3b52; font-size:12px; }
-.empty-block { height:calc(100% - 42px); min-height:150px; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:6px; text-align:center; color:#8793a3; }
-.empty-block strong { color:#4e5e76; font-size:14px; }
-.empty-block span { font-size:11px; }
-.head-actions { display:flex; gap:6px; }
-.top3-card { padding-top:10px; padding-bottom:10px; }
-.compact-head { align-items:center; }
-.compact-head h2 { margin-bottom:0; }
-.top3-grid { margin-top:7px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
-.mini-product { min-width:0; display:flex; gap:8px; padding:8px; border-radius:8px; background:#f8fafc; border:1px solid #e5eaf0; }
-.mini-product img { width:40px; height:40px; border-radius:6px; object-fit:cover; flex:0 0 auto; }
-.mini-product div { min-width:0; }
-.mini-product strong,.mini-product span,.mini-product small { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.mini-product strong { color:#2a3951; font-size:12px; }
-.mini-product span { margin-top:3px; color:#4968a8; font-size:11px; }
-.mini-product small { margin-top:1px; color:#8f9aa8; font-size:10.5px; }
-.empty-inline { margin-top:8px; padding:13px; text-align:center; color:#8c97a6; background:#f8fafc; border-radius:8px; font-size:11px; }
-@media(max-height:800px) and (min-width:981px){.surface-card{padding:10px 12px}.metric-grid{gap:7px}.overview-grid{gap:7px}}
-@media(max-width:1180px){.overview-grid{grid-template-columns:1fr 330px}.metric-grid{grid-template-columns:repeat(4,1fr)}}
-@media(max-width:980px){.page-stack{height:auto;grid-template-rows:auto}.overview-grid{grid-template-columns:1fr}.metric-grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:720px){.metric-grid,.top3-grid{grid-template-columns:1fr}.surface-card{padding:12px}.section-head{flex-direction:column}}
+.overview-page { height:100%; min-height:0; display:grid; grid-template-rows:auto auto minmax(230px,1fr) minmax(190px,.78fr); gap:9px; }
+.overview-hero { position:relative; min-height:68px; display:flex; align-items:center; justify-content:space-between; gap:20px; padding:0 8px 2px; overflow:hidden; }
+.overview-hero::after { content:""; position:absolute; right:5%; top:-70px; width:420px; height:170px; border-radius:50%; background:radial-gradient(ellipse at center,rgba(83,146,255,.13),transparent 65%); transform:rotate(-8deg); pointer-events:none; }
+.hero-kicker { color:#7182a0; font-size:10.5px; font-weight:700; letter-spacing:.08em; }
+.overview-hero h1 { margin:5px 0 3px; color:#10203c; font-size:24px; line-height:1.08; letter-spacing:-.035em; }
+.overview-hero p { margin:0; color:#7d899b; font-size:11.5px; }
+.hero-date { position:relative; z-index:1; min-width:240px; padding:9px 12px; border:1px solid #e1e7ef; border-radius:10px; background:rgba(255,255,255,.82); text-align:right; }
+.hero-date span,.hero-date strong { display:block; }
+.hero-date span { color:#929dac; font-size:10px; }
+.hero-date strong { margin-top:2px; color:#56657b; font-size:11px; font-weight:600; }
+.hero-date i { padding:0 5px; color:#a2adbb; font-style:normal; }
+.metric-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:8px; }
+.surface-card { min-height:0; border:1px solid #e4eaf2; background:rgba(255,255,255,.96); border-radius:12px; padding:11px 13px; overflow:hidden; box-shadow:0 8px 24px rgba(55,76,110,.035); }
+.primary-grid { min-height:0; display:grid; grid-template-columns:minmax(0,1.65fr) minmax(330px,.78fr); gap:9px; }
+.trend-card,.recommendation-card { display:flex; flex-direction:column; }
+.section-head { flex:0 0 auto; display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+.section-kicker { color:#6680ad; font-size:9.5px; font-weight:700; letter-spacing:.07em; }
+h2 { margin:2px 0; color:#172641; font-size:15.5px; line-height:1.2; }
+.text-link { border:0; background:transparent; color:#6281b9; cursor:pointer; font-size:10.5px; padding:4px 0; }
+.text-link:hover { color:#2f6df6; }
+.inline-note { margin-top:auto; padding:5px 7px; border-radius:6px; background:#eef8f5; color:#4f7468; font-size:10px; line-height:1.3; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.inline-note.warning { background:#fff6e8; color:#8b672a; }
+.recommendation-head { margin-bottom:7px; }
+.recommendation-top { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(130px,.8fr); gap:7px; }
+.recommended-price { padding:10px 11px; border-radius:10px; background:linear-gradient(145deg,#f2f7ff,#f4fbf8); border:1px solid #e1ebfa; }
+.recommended-price span,.recommended-price strong,.recommended-price small { display:block; }
+.recommended-price span { color:#6e7f97; font-size:10.5px; }
+.recommended-price strong { margin:4px 0 3px; color:#1e63e7; font-size:27px; line-height:1; letter-spacing:-.035em; }
+.recommended-price small { color:#1a9a68; font-size:10.5px; font-weight:650; }
+.recommendation-meta { display:grid; gap:6px; }
+.recommendation-meta div { padding:7px 8px; border:1px solid #e7ecf3; border-radius:9px; background:#f8faff; }
+.recommendation-meta span,.recommendation-meta b { display:block; }
+.recommendation-meta span { color:#8994a5; font-size:9.5px; }
+.recommendation-meta b { margin-top:2px; color:#315ec0; font-size:12px; }
+.reason-title { margin:8px 0 4px; color:#293b56; font-size:11px; font-weight:700; }
+.overview-reasons { flex:1; min-height:0; max-height:94px; margin:0; padding:0 4px 0 24px; overflow-y:auto; color:#5c6a7d; font-size:10.5px; line-height:1.42; }
+.overview-reasons li+li { margin-top:4px; }
+.overview-reasons li::marker { color:#2f6df6; font-weight:700; }
+.empty-block { flex:1; min-height:120px; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:7px; text-align:center; color:#8a96a7; }
+.empty-block strong { color:#536178; font-size:13px; }.empty-block span { font-size:10.5px; }
+.lower-grid { min-height:0; display:grid; grid-template-columns:minmax(0,1.72fr) minmax(300px,.68fr); gap:9px; }
+.competitor-card { display:flex; flex-direction:column; padding-top:9px; padding-bottom:9px; }
+.competitor-head { flex:0 0 auto; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:15px; margin-bottom:7px; }
+.competitor-title { display:flex; align-items:baseline; gap:7px; white-space:nowrap; }.competitor-title h2{margin:0}.competitor-title span{color:#91a0b2;font-size:10px}
+.market-stats { min-width:0; display:grid; grid-template-columns:repeat(5,minmax(62px,1fr)); gap:0; }
+.market-stats div { padding:0 9px; border-left:1px solid #edf1f5; min-width:0; }
+.market-stats span,.market-stats strong { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.market-stats span { color:#96a1b0; font-size:9px; }.market-stats strong{margin-top:2px;color:#283852;font-size:11px}
+.competitor-actions { display:flex; gap:5px; }
+.compact-table { flex:1; min-height:0; overflow-y:auto; border-top:1px solid #edf1f5; }
+.table-row { min-height:31px; display:grid; grid-template-columns:28px minmax(250px,1.9fr) minmax(120px,1fr) 86px 88px; gap:7px; align-items:center; padding:4px 6px; border-bottom:1px solid #f0f3f7; color:#617086; font-size:10.5px; }
+.table-head { position:sticky; top:0; z-index:2; min-height:28px; background:#f7f9fc; color:#8190a4; font-size:9.5px; font-weight:650; }
+.product-cell { min-width:0; display:flex; align-items:center; gap:7px; }
+.product-cell img,.image-fallback { width:26px; height:26px; border-radius:6px; object-fit:cover; flex:0 0 auto; background:#eef3f9; }
+.image-fallback { display:grid; place-items:center; color:#8aa0bf; font-size:9px; }
+.product-cell b { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#43536b; font-size:10.5px; font-weight:600; }
+.ellipsis { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }.price-value{color:#13a16c;font-size:10.5px}
+.empty-inline { flex:1; min-height:90px; display:grid; place-items:center; color:#8d98a8; font-size:10.5px; }
+.insight-stack { min-height:0; display:grid; grid-template-rows:minmax(0,1fr) auto; gap:9px; }
+.distribution-card { display:flex; flex-direction:column; }.mini-title{display:flex;align-items:baseline;gap:7px}.mini-title h3{margin:0;color:#263650;font-size:13px}.mini-title span{color:#929dac;font-size:9.5px}
+.bar-chart { flex:1; min-height:90px; display:grid; grid-template-columns:repeat(6,1fr); align-items:end; gap:6px; padding:10px 2px 0; }
+.bar-item { min-width:0; text-align:center; }.bar-track{height:72px;display:flex;align-items:flex-end;justify-content:center;border-bottom:1px solid #e5eaf1}.bar-track i{display:block;width:70%;max-width:30px;border-radius:5px 5px 1px 1px;background:linear-gradient(180deg,#4b7df0,#8bb0ff)}.bar-item strong{display:block;margin-top:3px;color:#596a82;font-size:9.5px}.bar-item span{display:block;color:#98a3b2;font-size:8.5px;white-space:nowrap}
+.sales-band-card { padding-top:9px; padding-bottom:9px; }.range-visual{position:relative;margin-top:12px;height:8px;border-radius:999px;background:#e8effd}.range-visual span{position:absolute;left:36%;width:30%;height:100%;border-radius:999px;background:linear-gradient(90deg,#6d6ff4,#8f65ef)}.range-visual b{position:absolute;left:51%;bottom:13px;transform:translateX(-50%);white-space:nowrap;padding:2px 6px;border-radius:5px;background:#eef1ff;color:#5661c8;font-size:9.5px}.sales-band-card small{display:block;margin-top:7px;color:#96a1b0;font-size:9px}
+@media(max-height:800px) and (min-width:981px){.overview-page{grid-template-rows:auto auto minmax(205px,1fr) minmax(165px,.75fr);gap:7px}.overview-hero{min-height:56px}.overview-hero h1{font-size:21px}.overview-hero p{display:none}.surface-card{padding:9px 11px}.recommendation-card .overview-reasons{max-height:72px}.table-row{min-height:28px;padding-top:3px;padding-bottom:3px}}
+@media(max-width:1280px){.metric-grid{grid-template-columns:repeat(3,1fr)}.overview-page{grid-template-rows:auto auto minmax(250px,1fr) minmax(190px,.8fr)}.market-stats div:nth-child(2),.market-stats div:nth-child(3){display:none}.market-stats{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:1080px){.primary-grid{grid-template-columns:1fr 330px}.lower-grid{grid-template-columns:1fr 280px}.table-row{grid-template-columns:28px minmax(210px,1.7fr) minmax(100px,1fr) 75px 75px}}
+@media(max-width:980px){.overview-page{height:auto;grid-template-rows:auto}.overview-hero{align-items:flex-start;flex-direction:column}.hero-date{width:100%;text-align:left}.metric-grid{grid-template-columns:repeat(2,1fr)}.primary-grid,.lower-grid{grid-template-columns:1fr}.overview-reasons{max-height:160px}.competitor-card{min-height:360px}.insight-stack{grid-template-columns:1fr 1fr;grid-template-rows:auto}.compact-table{max-height:330px}}
+@media(max-width:650px){.metric-grid,.insight-stack{grid-template-columns:1fr}.competitor-head{grid-template-columns:1fr}.market-stats{display:none}.table-row{grid-template-columns:26px minmax(180px,1fr) 75px}.table-row>span:nth-child(3),.table-row>span:nth-child(5){display:none}.overview-hero h1{font-size:21px}}
 </style>
