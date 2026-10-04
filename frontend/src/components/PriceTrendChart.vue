@@ -19,10 +19,10 @@ function draw() {
   const compact = props.compact
   chart.setOption({
     animationDuration: 260,
-    color: ['#2f6df6', '#875bea', '#20b97a'],
+    color: ['#2872f2', '#8b5cf6', '#18b978'],
     tooltip: {
       trigger: 'axis',
-      backgroundColor: '#1c2739',
+      backgroundColor: '#182235',
       borderWidth: 0,
       padding: compact ? 8 : 9,
       textStyle: { color: '#f7f9fc', fontSize: 11 },
@@ -43,7 +43,7 @@ function draw() {
       itemGap: compact ? 11 : 15,
       textStyle: { color: '#6b7890', fontSize: 10.5 },
     },
-    grid: { left: compact ? 44 : 48, right: 12, top: compact ? 34 : 38, bottom: 25 },
+    grid: { left: compact ? 42 : 48, right: 12, top: compact ? 34 : 38, bottom: 26 },
     xAxis: {
       type: 'category',
       boundaryGap: false,
@@ -58,19 +58,19 @@ function draw() {
       name: compact ? '' : '价格 / ¥',
       nameTextStyle: { color: '#8d99aa', fontSize: 10.5, padding: [0, 0, 4, -6] },
       axisLabel: { color: '#8290a3', fontSize: 10 },
-      splitLine: { lineStyle: { color: '#edf1f6', type: 'solid' } },
+      splitLine: { lineStyle: { color: '#edf2f7', type: 'solid' } },
     },
     series: [
       {
         name: '我方价格', type: 'line', smooth: .32, symbol: 'circle', symbolSize: compact ? 5 : 6, connectNulls: false,
         lineStyle: { width: compact ? 2.2 : 2.6 },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(47,109,246,.16)' }, { offset: 1, color: 'rgba(47,109,246,.01)' }]) },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(40,114,242,.15)' }, { offset: 1, color: 'rgba(40,114,242,.01)' }]) },
         data: daily.map((item) => item.own_price),
       },
       {
         name: '市场均价', type: 'line', smooth: .32, symbol: 'circle', symbolSize: compact ? 5 : 6, connectNulls: false,
         lineStyle: { width: 2 },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(135,91,234,.09)' }, { offset: 1, color: 'rgba(135,91,234,0)' }]) },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(139,92,246,.08)' }, { offset: 1, color: 'rgba(139,92,246,0)' }]) },
         data: daily.map((item) => item.competitor_avg_price),
       },
       {
